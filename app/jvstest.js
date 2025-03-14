@@ -1,3 +1,3 @@
 function showAlert() {
-    alert("Button clicked!");
+    alert("Hello!");
 }
