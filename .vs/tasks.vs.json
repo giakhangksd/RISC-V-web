@@ -1,0 +1,10 @@
+{
+  "version": "0.2.1",
+  "tasks": [
+    {
+      "taskLabel": "task-jvstest",
+      "appliesTo": "app/jvstest.js",
+      "type": "launch"
+    }
+  ]
+}
