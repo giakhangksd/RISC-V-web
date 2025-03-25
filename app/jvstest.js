@@ -58,10 +58,8 @@ function riscvToBinary(instruction) {
 
     const opcode = parts[0];
     const rd = parts[1];
-    const rs1 = parts[2];
-    const rs2OrImm = parts[3];
-
-    
+    const rs1 = parts.length === 5 ? parts[3] : parts[2];
+    const rs2OrImm = parts.length === 5 ? parts[2] : parts[3]; 
 
     function getRegisterNumber(register) {
         switch (register) {
@@ -104,9 +102,8 @@ function riscvToBinary(instruction) {
     const rdNum = getRegisterNumber(rd);
     const rs1Num = getRegisterNumber(rs1);
     const rs2Num = getRegisterNumber(rs2OrImm);
-    //const imm = parseInt(rs2OrImm, 10).toString(2);
-    const imm = rs2OrImm.startsWith('0X') ? parseInt(rs2OrImm, 16).toString(2) : parseInt(rs2OrImm, 10).toString(2);
-    if (!rdNum || !rs1Num || (!rs2Num && isNaN(imm))) {
+    const imm = rs2OrImm && rs2OrImm.startsWith('0X') ? parseInt(rs2OrImm, 16).toString(2) : parseInt(rs2OrImm, 10).toString(2);
+    if (!rdNum || !rs1Num || (!rs2Num && isNaN(parseInt(imm, 2)))) {
         return null;
     }
 
@@ -159,68 +156,49 @@ function riscvToBinary(instruction) {
             break;
         //I-type
         case 'JALR':
-            if (isNaN(imm)) return null;
             binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 000 ${rdNum} 1100111`;
             break;
-        case 'SB':
-            if (isNaN(imm)) return null;
-            binaryInstruction = `${imm.slice(0, 7)} ${rs2Num} ${rs1Num} 000 ${imm.slice(7)} 0100011`;
-            break;
         case 'LB':
-            if (isNaN(imm)) return null;
             binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 000 ${rdNum} 0000011`;
             break;
         case 'LH':
-            if (isNaN(imm)) return null;
             binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 001 ${rdNum} 0000011`;
             break;
         case 'LW':
-            if (isNaN(imm)) return null;
             binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 010 ${rdNum} 0000011`;
             break;
         case 'LBU':
-            if (isNaN(imm)) return null;
             binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 100 ${rdNum} 0000011`;
             break;
         case 'LHU':
-            if (isNaN(imm)) return null;
             binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 101 ${rdNum} 0000011`;
             break;
         case 'ADDI':
-            if (isNaN(imm)) return null;
             binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 000 ${rdNum} 0010011`;
             break;
         case 'SLTI':
-            if (isNaN(imm)) return null;
             binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 010 ${rdNum} 0010011`;
             break;
         case 'SLTIU':
-            if (isNaN(imm)) return null;
             binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 011 ${rdNum} 0010011`;
             break;
         case 'XORI':
-            //if (isNaN(imm)) return null;
             binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 100 ${rdNum} 0010011`;
             break;
-        case 'ORI':
-            //if (isNaN(imm)) return null;
+        case 'ORI' :
             binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 110 ${rdNum} 0010011`;
             break;
         case 'ANDI':
-            //if (isNaN(imm)) return null;
             binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 111 ${rdNum} 0010011`;
             break;
         //S-type
         case 'SB':
-            if (isNaN(imm)) return null;
             binaryInstruction = `${imm.slice(0, 7)} ${rs2Num} ${rs1Num} 000 ${imm.slice(7)} 0100011`;
             break;
         case 'SH':
-            if (isNaN(imm)) return null;
             binaryInstruction = `${imm.slice(0, 7)} ${rs2Num} ${rs1Num} 001 ${imm.slice(7)} 0100011`;
             break;
         case 'SW':
-            if (isNaN(imm)) return null;
             binaryInstruction = `${imm.slice(0, 7)} ${rs2Num} ${rs1Num} 010 ${imm.slice(7)} 0100011`;
             break;
         //U-type
