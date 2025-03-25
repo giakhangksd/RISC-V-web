@@ -50,7 +50,7 @@ function convertToBinary() {
 function riscvToBinary(instruction) {
     instruction = normalizeRegisterNames(instruction);
 
-    const parts = instruction.trim().toUpperCase().split(/[ ,]+/);
+    const parts = instruction.trim().toUpperCase().split(/[ ,()]+/);
 
     if (parts.length < 3) {
         return null;
@@ -60,6 +60,8 @@ function riscvToBinary(instruction) {
     const rd = parts[1];
     const rs1 = parts[2];
     const rs2OrImm = parts[3];
+
+    
 
     function getRegisterNumber(register) {
         switch (register) {
@@ -102,8 +104,8 @@ function riscvToBinary(instruction) {
     const rdNum = getRegisterNumber(rd);
     const rs1Num = getRegisterNumber(rs1);
     const rs2Num = getRegisterNumber(rs2OrImm);
-    const imm = parseInt(rs2OrImm, 10).toString(2);
-
+    //const imm = parseInt(rs2OrImm, 10).toString(2);
+    const imm = rs2OrImm.startsWith('0X') ? parseInt(rs2OrImm, 16).toString(2) : parseInt(rs2OrImm, 10).toString(2);
     if (!rdNum || !rs1Num || (!rs2Num && isNaN(imm))) {
         return null;
     }
