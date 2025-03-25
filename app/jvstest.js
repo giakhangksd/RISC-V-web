@@ -193,13 +193,13 @@ function riscvToBinary(instruction) {
             break;
         //S-type
         case 'SB':
-            binaryInstruction = `${imm.slice(0, 7)} ${rs2Num} ${rs1Num} 000 ${imm.slice(7)} 0100011`;
+            binaryInstruction = `${imm.padStart(12, '0').slice(0, 7)} ${rdNum} ${rs1Num} 000 ${imm.padStart(12, '0').slice(7)} 0100011`;
             break;
         case 'SH':
-            binaryInstruction = `${imm.slice(0, 7)} ${rs2Num} ${rs1Num} 001 ${imm.slice(7)} 0100011`;
+            binaryInstruction = `${imm.padStart(12, '0').slice(0, 7)} ${rdNum} ${rs1Num} 001 ${imm.padStart(12, '0').slice(7)} 0100011`;
             break;
         case 'SW':
-            binaryInstruction = `${imm.slice(0, 7)} ${rs2Num} ${rs1Num} 010 ${imm.slice(7)} 0100011`;
+            binaryInstruction = `${imm.padStart(12, '0').slice(0, 7)} ${rdNum} ${rs1Num} 010 ${imm.padStart(12, '0').slice(7)} 0100011`;
             break;
         //U-type
         case 'LUI':
