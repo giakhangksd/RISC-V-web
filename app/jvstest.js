@@ -48,18 +48,47 @@ function convertToBinary() {
 }
 
 function riscvToBinary(instruction) {
+    // Remove comments (everything after #)
+    instruction = instruction.split('#')[0].trim();
+    // Normalize register names
     instruction = normalizeRegisterNames(instruction);
 
-    const parts = instruction.trim().toUpperCase().split(/[ ,()]+/);
+    // Split the instruction into parts
+    const parts = instruction.trim().toUpperCase().split(/[ ,]+/);
 
-    if (parts.length < 3) {
-        return null;
+    // Validate that the instruction has at least 3 parts
+    if (parts.length < 3 || parts.length > 4) {
+        return null; // Invalid instruction format
     }
 
     const opcode = parts[0];
     const rd = parts[1];
-    const rs1 = parts.length === 5 ? parts[3] : parts[2];
-    const rs2OrImm = parts.length === 5 ? parts[2] : parts[3]; 
+    let rs1 = parts[2];
+    let rs2 = parts.length === 4 && isNaN(parts[3]) ? parts[3] : null;
+    let imm = parts.length === 4 ? parts[3] : null;
+
+
+    // Handle `imm(rs1)` format
+    const immRs1Match = rs1.match(/^(-?\d+)\((X\d+)\)$/); // Match `imm(rs1)` format
+    if (immRs1Match) {
+        imm = parseInt(immRs1Match[1], 10); // Extract immediate value
+        rs1 = immRs1Match[2]; // Extract base register
+    } else if (rs1.match(/^\(X\d+\)\d+$/)) {
+        // Reject invalid format like `(X2)3`
+        return null;
+    }
+
+    // Parse immediate value (handle both decimal and hexadecimal)
+    if (imm && imm.toString().toLowerCase().startsWith('0x')) {
+        imm = parseInt(imm, 16); // Parse as hexadecimal
+    } else if (imm) {
+        imm = parseInt(imm, 10); // Parse as decimal
+    }
+
+    // Validate that `imm` is a number for I-type instructions
+    if (['ADDI', 'SLTI', 'SLTIU', 'XORI', 'ORI', 'ANDI', 'JALR'].includes(opcode) && isNaN(imm)) {
+        return null; // Invalid immediate value
+    }
 
     function getRegisterNumber(register) {
         switch (register) {
@@ -98,148 +127,160 @@ function riscvToBinary(instruction) {
             default: return null;
         }
     }
-
     const rdNum = getRegisterNumber(rd);
     const rs1Num = getRegisterNumber(rs1);
-    const rs2Num = getRegisterNumber(rs2OrImm);
-    const imm = rs2OrImm && rs2OrImm.startsWith('0X') ? parseInt(rs2OrImm, 16).toString(2) : parseInt(rs2OrImm, 10).toString(2);
-    // if (!rdNum || !rs1Num || (!rs2Num && isNaN(parseInt(imm, 2)))) {
-    //     return null;
-    // }
-    if (!rdNum || (!rs1Num && opcode !== 'LUI' && opcode !== 'AUIPC') || (!rs2Num && isNaN(parseInt(imm, 2)))) {
-        return null;
-    }
-    let binaryInstruction = '';
+    const rs2Num = rs2 ? getRegisterNumber(rs2) : null;
 
+    // Validate registers and immediate
+    if (!rdNum || !rs1Num || (rs2 === null && imm === null )) {
+        return null; // Invalid instruction
+    }
+
+    // Convert the immediate value to binary (sign-extend to 12 bits)
+    const imm12 = imm !== null ? (imm & 0xFFF).toString(2).padStart(12, '0') : null;
+    const imm5 = imm !== null ? (imm & 0x1F).toString(2).padStart(5, '0') : null;
+
+    let binaryInstruction = '';
     switch (opcode) {
         //R-type
         case 'SLLI':
-            if (isNaN(imm)) return null;
-            binaryInstruction = `${imm.padStart(5, '0')} ${rs1Num} 001 ${rdNum} 0010011`;
+            binaryInstruction = `0000000 ${imm5} ${rs1Num} 001 ${rdNum} 0010011`;
             break;
         case 'SRLI':
-            if (isNaN(imm)) return null;
-            binaryInstruction = `${imm.padStart(5, '0')} ${rs1Num} 101 ${rdNum} 0010011`;
+            binaryInstruction = `0000000 ${imm5} ${rs1Num} 101 ${rdNum} 0010011`;
             break;
         case 'SRAI':
-            if (isNaN(imm)) return null;
-            binaryInstruction = `${imm.padStart(5, '0')} ${rs1Num} 101 ${rdNum} 0010011`;
+            binaryInstruction = `0000000 ${imm5} ${rs1Num} 001 ${rdNum} 0010011`;
             break;
         case 'ADD':
+            if (!rs2Num) return null;
             binaryInstruction = `0000000 ${rs2Num} ${rs1Num} 000 ${rdNum} 0110011`;
             break;
         case 'SUB':
+            if (!rs2Num) return null;
             binaryInstruction = `0100000 ${rs2Num} ${rs1Num} 000 ${rdNum} 0110011`;
             break;
         case 'SLL':
+            if (!rs2Num) return null;
             binaryInstruction = `0000000 ${rs2Num} ${rs1Num} 001 ${rdNum} 0110011`;
             break;
         case 'SLT':
+            if (!rs2Num) return null;
             binaryInstruction = `0000000 ${rs2Num} ${rs1Num} 010 ${rdNum} 0110011`;
             break;
         case 'SLTU':
+            if (!rs2Num) return null;
             binaryInstruction = `0000000 ${rs2Num} ${rs1Num} 011 ${rdNum} 0110011`;
             break;
         case 'XOR':
+            if (!rs2Num) return null;
             binaryInstruction = `0000000 ${rs2Num} ${rs1Num} 100 ${rdNum} 0110011`;
             break;
         case 'SRL':
+            if (!rs2Num) return null;
             binaryInstruction = `0000000 ${rs2Num} ${rs1Num} 101 ${rdNum} 0110011`;
             break;
         case 'SRA':
+            if (!rs2Num) return null;
             binaryInstruction = `0100000 ${rs2Num} ${rs1Num} 101 ${rdNum} 0110011`;
             break;
         case 'OR':
+            if (!rs2Num) return null;
             binaryInstruction = `0000000 ${rs2Num} ${rs1Num} 110 ${rdNum} 0110011`;
             break;
         case 'AND':
-            if (!isNaN(imm)) return null;
+            if (!rs2Num) return null;
             binaryInstruction = `0000000 ${rs2Num} ${rs1Num} 111 ${rdNum} 0110011`;
             break;
-        //I-type
-        case 'JALR':
-            binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 000 ${rdNum} 1100111`;
+         // I-type (load instructions)
+         case 'JALR':
+            if (!imm12) return null;
+            binaryInstruction = `${imm12} ${rs1Num} 000 ${rdNum} 1100111`;
             break;
-        case 'LB':
-            binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 000 ${rdNum} 0000011`;
+         case 'LB':
+            if (!imm12) return null;
+            binaryInstruction = `${imm12} ${rs1Num} 000 ${rdNum} 0000011`;
             break;
         case 'LH':
-            binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 001 ${rdNum} 0000011`;
+            if (!imm12) return null;
+            binaryInstruction = `${imm12} ${rs1Num} 001 ${rdNum} 0000011`;
             break;
         case 'LW':
-            binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 010 ${rdNum} 0000011`;
+            if (!imm12) return null;
+            binaryInstruction = `${imm12} ${rs1Num} 010 ${rdNum} 0000011`;
             break;
         case 'LBU':
-            binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 100 ${rdNum} 0000011`;
+            if (!imm12) return null;
+            binaryInstruction = `${imm12} ${rs1Num} 100 ${rdNum} 0000011`;
             break;
         case 'LHU':
-            binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 101 ${rdNum} 0000011`;
+            if (!imm12) return null;
+            binaryInstruction = `${imm12} ${rs1Num} 101 ${rdNum} 0000011`;
             break;
+        // I-type (arithmetic and logical instructions)
         case 'ADDI':
-            binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 000 ${rdNum} 0010011`;
+            if (!imm12) return null;
+            binaryInstruction = `${imm12} ${rs1Num} 000 ${rdNum} 0010011`;
             break;
         case 'SLTI':
-            binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 010 ${rdNum} 0010011`;
+            if (!imm12) return null;
+            binaryInstruction = `${imm12} ${rs1Num} 010 ${rdNum} 0010011`;
             break;
         case 'SLTIU':
-            binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 011 ${rdNum} 0010011`;
+            if (!imm12) return null;
+            binaryInstruction = `${imm12} ${rs1Num} 011 ${rdNum} 0010011`;
             break;
         case 'XORI':
-            binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 100 ${rdNum} 0010011`;
+            if (!imm12) return null;
+            binaryInstruction = `${imm12} ${rs1Num} 100 ${rdNum} 0010011`;
             break;
-        case 'ORI' :
-            binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 110 ${rdNum} 0010011`;
+        case 'ORI':
+            if (!imm12) return null;
+            binaryInstruction = `${imm12} ${rs1Num} 110 ${rdNum} 0010011`;
             break;
         case 'ANDI':
-            binaryInstruction = `${imm.padStart(12, '0')} ${rs1Num} 111 ${rdNum} 0010011`;
+            if (!imm12) return null;
+            binaryInstruction = `${imm12} ${rs1Num} 111 ${rdNum} 0010011`;
             break;
-        //S-type
+        // S-type (store instructions)
         case 'SB':
-            binaryInstruction = `${imm.padStart(12, '0').slice(0, 7)} ${rdNum} ${rs1Num} 000 ${imm.padStart(12, '0').slice(7)} 0100011`;
+            if (!imm12) return null;
+            binaryInstruction = `${imm12} ${rs1Num} 000 ${rdNum} 0100011`;
             break;
         case 'SH':
-            binaryInstruction = `${imm.padStart(12, '0').slice(0, 7)} ${rdNum} ${rs1Num} 001 ${imm.padStart(12, '0').slice(7)} 0100011`;
+            if (!imm12) return null;
+            binaryInstruction = `${imm12} ${rs1Num} 001 ${rdNum} 0100011`;
             break;
         case 'SW':
-            binaryInstruction = `${imm.padStart(12, '0').slice(0, 7)} ${rdNum} ${rs1Num} 010 ${imm.padStart(12, '0').slice(7)} 0100011`;
+            if (!imm12) return null;
+            binaryInstruction = `${imm12} ${rs1Num} 010 ${rdNum} 0100011`;
             break;
-        //U-type
-        case 'LUI':
-            binaryInstruction = `${imm.padStart(20, '0')} ${rdNum} 0110111`;
-            break;
-        case 'AUIPC':
-            binaryInstruction = `${imm.padStart(20, '0')} ${rdNum} 0010111`;
-            break;
-        //J-type
-        case 'JAL':
-            if (isNaN(imm)) return null;
-            binaryInstruction = `${imm.slice(0, 1)} ${imm.slice(10, 20)} ${imm.slice(9, 10)} ${imm.slice(1, 9)} ${rdNum} 1101111`;
-            break;
-        //B-type
+        // B-type (branch instructions)
         case 'BEQ':
-            if (isNaN(imm)) return null;
-            binaryInstruction = `${imm.slice(0, 1)} ${imm.slice(11, 12)} ${imm.slice(1, 5)} ${rs2Num} ${rs1Num} 000 ${imm.slice(5, 11)} ${imm.slice(12)} 1100011`;
+            if (!imm12) return null;
+            binaryInstruction = `${imm12} ${rs1Num} ${rs2Num} 000 ${rdNum} 1100011`;
             break;
         case 'BNE':
-            if (isNaN(imm)) return null;
-            binaryInstruction = `${imm.slice(0, 1)} ${imm.slice(11, 12)} ${imm.slice(1, 5)} ${rs2Num} ${rs1Num} 001 ${imm.slice(5, 11)} ${imm.slice(12)} 1100011`;
+            if (!imm12) return null;
+            binaryInstruction = `${imm12} ${rs1Num} ${rs2Num} 001 ${rdNum} 1100011`;
             break;
         case 'BLT':
-            if (isNaN(imm)) return null;
-            binaryInstruction = `${imm.slice(0, 1)} ${imm.slice(11, 12)} ${imm.slice(1, 5)} ${rs2Num} ${rs1Num} 100 ${imm.slice(5, 11)} ${imm.slice(12)} 1100011`;
+            if (!imm12) return null;
+            binaryInstruction = `${imm12} ${rs1Num} ${rs2Num} 100 ${rdNum} 1100011`;
             break;
         case 'BGE':
-            if (isNaN(imm)) return null;
-            binaryInstruction = `${imm.slice(0, 1)} ${imm.slice(11, 12)} ${imm.slice(1, 5)} ${rs2Num} ${rs1Num} 101 ${imm.slice(5, 11)} ${imm.slice(12)} 1100011`;
+            if (!imm12) return null;
+            binaryInstruction = `${imm12} ${rs1Num} ${rs2Num} 101 ${rdNum} 1100011`;
             break;
         case 'BLTU':
-            if (isNaN(imm)) return null;
-            binaryInstruction = `${imm.slice(0, 1)} ${imm.slice(11, 12)} ${imm.slice(1, 5)} ${rs2Num} ${rs1Num} 110 ${imm.slice(5, 11)} ${imm.slice(12)} 1100011`;
+            if (!imm12) return null;
+            binaryInstruction = `${imm12} ${rs1Num} ${rs2Num} 110 ${rdNum} 1100011`;
             break;
         case 'BGEU':
-            if (isNaN(imm)) return null;
-            binaryInstruction = `${imm.slice(0, 1)} ${imm.slice(11, 12)} ${imm.slice(1, 5)} ${rs2Num} ${rs1Num} 111 ${imm.slice(5, 11)} ${imm.slice(12)} 1100011`;
+            if (!imm12) return null;
+            binaryInstruction = `${imm12} ${rs1Num} ${rs2Num} 111 ${rdNum} 1100011`;
             break;
+        // U-type (lui and auipc)
         default:
             return null;
     }
