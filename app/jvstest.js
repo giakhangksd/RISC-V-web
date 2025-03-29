@@ -103,10 +103,12 @@ function riscvToBinary(instruction) {
     const rs1Num = getRegisterNumber(rs1);
     const rs2Num = getRegisterNumber(rs2OrImm);
     const imm = rs2OrImm && rs2OrImm.startsWith('0X') ? parseInt(rs2OrImm, 16).toString(2) : parseInt(rs2OrImm, 10).toString(2);
-    if (!rdNum || !rs1Num || (!rs2Num && isNaN(parseInt(imm, 2)))) {
+    // if (!rdNum || !rs1Num || (!rs2Num && isNaN(parseInt(imm, 2)))) {
+    //     return null;
+    // }
+    if (!rdNum || (!rs1Num && opcode !== 'LUI' && opcode !== 'AUIPC') || (!rs2Num && isNaN(parseInt(imm, 2)))) {
         return null;
     }
-
     let binaryInstruction = '';
 
     switch (opcode) {
@@ -203,11 +205,9 @@ function riscvToBinary(instruction) {
             break;
         //U-type
         case 'LUI':
-            if (isNaN(imm)) return null;
             binaryInstruction = `${imm.padStart(20, '0')} ${rdNum} 0110111`;
             break;
         case 'AUIPC':
-            if (isNaN(imm)) return null;
             binaryInstruction = `${imm.padStart(20, '0')} ${rdNum} 0010111`;
             break;
         //J-type
