@@ -1,0 +1,163 @@
+body {
+    font-family: sans-serif, monospace;
+    /* Ưu tiên sans-serif cho tổng thể */
+    margin: 20px;
+    background-color: #f8f9fa;
+    /* Màu nền sáng hơn chút */
+    color: #333;
+}
+
+h1,
+h2 {
+    text-align: center;
+    color: #444;a
+    margin-top: 10px;
+    margin-bottom: 20px;
+    /* Tăng khoảng cách dưới */
+    font-weight: 600;
+    /* Đậm hơn chút */
+}
+
+.container {
+    display: flex;
+    gap: 30px;
+    /* Tăng khoảng cách giữa 2 cột */
+    max-width: 1200px;
+    /* Giới hạn chiều rộng tối đa */
+    margin: 0 auto;
+    /* Căn giữa container */
+}
+
+.column {
+    background-color: #fff;
+    padding: 20px;
+    /* Tăng padding */
+    border-radius: 8px;
+    /* Bo góc nhiều hơn */
+    box-shadow: 0 3px 6px rgba(0, 0, 0, 0.1);
+    /* Đổ bóng rõ hơn */
+}
+
+.left-column {
+    flex: 3;
+    /* Cột trái chiếm nhiều không gian hơn */
+    display: flex;
+    flex-direction: column;
+}
+
+.right-column {
+    flex: 2;
+    /* Cột phải chiếm ít không gian hơn */
+    max-height: 70vh;
+    /* Giới hạn chiều cao cột phải */
+    overflow-y: auto;
+    /* Thêm thanh cuộn nếu nội dung dài */
+}
+
+textarea {
+    width: calc(100% - 12px);
+    /* Chiều rộng trừ đi padding */
+    min-height: 300px;
+    /* Tăng chiều cao tối thiểu */
+    margin-bottom: 15px;
+    font-family: monospace;
+    /* Font cho code */
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    padding: 10px;
+    font-size: 1em;
+    /* Tăng kích thước font */
+    line-height: 1.5;
+    resize: vertical;
+}
+
+button#assembleButton {
+    /* Chỉ style nút Assemble */
+    display: block;
+    /* Để nút chiếm cả dòng */
+    width: 150px;
+    /* Độ rộng cố định */
+    padding: 10px 15px;
+    margin: 0 auto 15px auto;
+    /* Căn giữa nút */
+    cursor: pointer;
+    background-color: #007bff;
+    /* Màu xanh dương */
+    color: white;
+    border: none;
+    border-radius: 5px;
+    font-size: 1em;
+    font-weight: bold;
+    transition: background-color 0.2s;
+}
+
+button#assembleButton:hover {
+    background-color: #0056b3;
+}
+
+button#assembleButton:active {
+    background-color: #004085;
+}
+
+pre {
+    background-color: #e9ecef;
+    /* Màu nền output */
+    padding: 15px;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    min-height: 100px;
+    /* Chiều cao tối thiểu */
+    max-height: 250px;
+    overflow-y: auto;
+    font-family: monospace;
+    /* Font cho output nhị phân */
+    font-size: 0.95em;
+    line-height: 1.6;
+    margin-bottom: 15px;
+}
+
+/* Style cho bảng thanh ghi */
+#registerTable {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9em;
+}
+
+#registerTable th,
+#registerTable td {
+    border: 1px solid #dee2e6;
+    padding: 8px 10px;
+    text-align: left;
+
+    /* Căn phải cho cột số */
+    &:nth-child(2),
+    &:nth-child(3) &:nth-child(4) {
+        text-align: right;
+        font-family: monospace;
+        /* Font monospace cho giá trị số */
+    }
+}
+
+#registerTable th {
+    background-color: #f1f3f5;
+    font-weight: 600;
+    position: sticky;
+    /* Giữ header khi cuộn */
+    top: 0;
+    /* Đặt ở đỉnh */
+    z-index: 1;
+    /* Đảm bảo nằm trên nội dung */
+}
+
+#registerTable tr:nth-child(even) td {
+    /* Màu nền xen kẽ */
+    background-color: #f8f9fa;
+}
+
+/* Highlight cho thanh ghi thay đổi */
+#registerTable tr.highlight td {
+    background-color: #fff3cd;
+    transition: background-color 0.5s ease-out;
+}

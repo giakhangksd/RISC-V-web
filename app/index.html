@@ -1,52 +1,50 @@
 <!DOCTYPE html>
-<html>
+<html lang="vi">
+
 <head>
-    <title>RISC-V Instruction to Binary Converter</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            background-color: #f0f0f0;
-            margin: 0;
-        }
-        .container {
-            background-color: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-            width: 90%;
-            height: 90%;
-            display: flex;
-            flex-direction: column;
-        }
-        textarea, button {
-            margin: 5px 0;
-            padding: 10px;
-            font-size: 16px;
-            width: 100%;
-        }
-        textarea {
-            flex: 1;
-            resize: none;
-        }
-        pre {
-            flex: 1;
-            background-color: #e0e0e0;
-            padding: 10px;
-            overflow: auto;
-        }
-    </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RISC-V Assembler</title>
+    <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
+    <h1>RISC-V Assembler</h1>
+
     <div class="container">
-        <h1>RISC-V Instruction to Binary Converter</h1>
-        <textarea id="instructionInput" placeholder="Enter RISC-V assembly code"></textarea>
-        <button onclick="convertToBinary()">Convert</button>
-        <pre id="binaryOutput"></pre>
+        <!-- Cột trái: Input & Binary Output -->
+        <div class="column left-column">
+            <h2>Input your RISC-V code here:</h2>
+            <textarea id="instructionInput" placeholder="Enter RISC-V assembly code"></textarea>
+
+            <button id="assembleButton">Assemble</button>
+
+            <h2>Binary Output:</h2>
+            <pre id="binaryOutput"></pre>
+        </div>
+
+        <!-- registerregister -->
+        <div class="column right-column">
+            <table id="registerTable">
+                <thead>
+                    <tr>
+                        <th>Register</th>
+                        <th>Decimal</th>
+                        <th>Hex</th>
+                        <th>Binary</th>
+                    </tr>
+                </thead>
+                <tbody>
+
+                </tbody>
+            </table>
+        </div>
     </div>
-    <script src="jvstest.js"></script>
+
+    <script src="assembler.js" type="module"></script>
+    <script src="simulator.js" type="module"></script>
+    <script src="javascript.js" type="module"></script>
+
 </body>
+
 </html>
