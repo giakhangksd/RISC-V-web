@@ -332,9 +332,17 @@ export const assembler = {
                 } else {
                     throw new Error(`Undefined label or symbol: "${immediate}" in instruction "${instruction}"`);
                 }
-            } else {
-                immValue = parseInt(immediate, 10);
+            } 
+            else {
+                // Handle hexadecimal and decimal values
+                if (typeof immediate === 'string' && immediate.trim().toLowerCase().startsWith('0x')) {
+                    immValue = parseInt(immediate, 16); // Convert hex to decimal
+                } else {
+                    immValue = parseInt(immediate, 10); // Convert decimal string to number
+                }
             }
+
+            
 
 
             let maxBits;
