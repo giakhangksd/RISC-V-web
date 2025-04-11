@@ -278,14 +278,17 @@ export const assembler = {
         // 2. Phân tích cú pháp lệnh (đã chuẩn hóa)
         // Cần xử lý các trường hợp như lw rd, offset(rs1)
         let parts;
-        const loadStoreMatch = normalizedInstruction.match(/^(\w+)\s+([^,]+),\s*(-?\w+)\(([^)]+)\)$/i); // Match lw/sw rd, offset(rs1)
+        const loadStoreMatch = normalizedInstruction.match(/^(\w+)\s+([^,]+),\s*(-?\d+)\((X\d+)\)$/i); // Match lw/sw rd, imm(rs1)
         if (loadStoreMatch) {
-            parts = [loadStoreMatch[1], loadStoreMatch[2], loadStoreMatch[4], loadStoreMatch[3]]; // opcode, rd/rs2, rs1, imm(offset)
+            parts = [loadStoreMatch[1], loadStoreMatch[2], loadStoreMatch[4], loadStoreMatch[3]]; // opcode, rd/rs2, rs1, imm
         } else {
-            parts = normalizedInstruction.trim().toUpperCase().split(/[,\s()]+/); // Tách cơ bản hơn
+            if (normalizedInstruction.match(/^(\w+)\s+([^,]+),\s*\(([^)]+)\)(-?\d+)$/i)) {
+                throw new Error(`Invalid load/store format: "${instruction}". Use "OP rd, imm(rs1)" syntax`);
+            }
+            parts = normalizedInstruction.trim().toUpperCase().split(/[,\s()]+/); // Basic fallback parsing
         }
 
-        const opcode = parts[0];
+        const opcode = parts[0].toUpperCase();
 
         if (!this.instructionFormats[opcode]) {
             // Có thể là lệnh giả? (Sẽ xử lý sau)
@@ -341,9 +344,6 @@ export const assembler = {
                     immValue = parseInt(immediate, 10); // Convert decimal string to number
                 }
             }
-
-            
-
 
             let maxBits;
             switch (format) {
