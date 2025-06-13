@@ -12,39 +12,77 @@
     <h1>RISC-V Assembler</h1>
 
     <div class="container">
-        <!-- Cột trái: Input & Binary Output -->
         <div class="column left-column">
             <h2>Input your RISC-V code here:</h2>
             <textarea id="instructionInput" placeholder="Enter RISC-V assembly code"></textarea>
 
-            <button id="assembleButton">Assemble</button>
-  
+            <div class="controls">
+                <button id="assembleButton">Assemble</button>
+                <button id="runButton">Run</button>
+                <button id="stepButton">Step</button>
+                <button id="resetButton">Reset</button>
+            </div>
+
             <h2>Binary Output:</h2>
             <pre id="binaryOutput"></pre>
         </div>
 
-        <!-- registerregister -->
         <div class="column right-column">
-            <table id="registerTable">
+            <div class="register-view-toggle">
+                <button id="toggleRegisterViewButton">View Floating-Point Registers</button>
+            </div>
+
+            <table id="registerTable" class="register-display-table active-table">
                 <thead>
                     <tr>
-                        <th>Register</th>
-                        <th>Decimal</th>
-                        <th>Hex</th>
-                        <th>Binary</th>
-                    </tr>
+                        <th>Name</th>  <th>Value</th> </tr>
                 </thead>
-                <tbody>
+                <tbody id="registerTableBody">
+                    </tbody>
+            </table>
 
-                </tbody>
+            <table id="fpRegisterTable" class="register-display-table">
+                <thead>
+                    <tr>
+                        <th>Register</th>    <th>Float Value</th> <th>Hex (Bits)</th>  </tr>
+                </thead>
+                <tbody id="fpRegisterTableBody">
+                    </tbody>
             </table>
         </div>
     </div>
 
-    <script src="assembler.js" type="module"></script>
-    <script src="simulator.js" type="module"></script>
-    <script src="javascript.js" type="module"></script>
+    <div class="data-segment-container">
+        <h2>Data Segment View</h2>
+        <div class="address-search">
+            <label for="dataSegmentAddressInput">Go to Address:</label>
+            <input type="text" id="dataSegmentAddressInput" placeholder="e.g., 0x10010000">
+            <button id="goToDataSegmentAddress">Go</button>
+            <button id="toggleDataSegmentMode" style="margin-left: 10px;">Toggle Hex/ASCII</button>
+        </div>
+        <div class="table-wrapper">
+            <table id="dataSegmentTable">
+                <thead>
+                    <tr>
+                        <th>Address</th>
+                        <th>Value (+0)</th>
+                        <th>Value (+4)</th>
+                        <th>Value (+8)</th>
+                        <th>Value (+c)</th>
+                        <th>Value (+10)</th>
+                        <th>Value (+14)</th>
+                        <th>Value (+18)</th>
+                        <th>Value (+1c)</th>
+                    </tr>
+                </thead>
+                <tbody id="dataSegmentBody">
+                    </tbody>
+            </table>
+        </div>
+    </div>
 
+    <script src="js/javascript.js" type="module"></script>
+    <script src="js/assembler.js" type="module"></script>
+    <script src="js/simulator.js" type="module"></script>
 </body>
-
 </html>

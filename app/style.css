@@ -1,163 +1,324 @@
+/* style.css */
+
 body {
     font-family: sans-serif, monospace;
-    /* Ưu tiên sans-serif cho tổng thể */
+    /* Ưu tiên font sans-serif dễ đọc, dự phòng monospace */
     margin: 20px;
+    /* Khoảng cách lề xung quanh trang */
     background-color: #f8f9fa;
-    /* Màu nền sáng hơn chút */
+    /* Màu nền xám nhạt cho toàn trang */
     color: #333;
+    /* Màu chữ mặc định (xám đậm) */
+    line-height: 1.5;
+    /* Chiều cao dòng mặc định dễ đọc hơn */
 }
 
 h1,
 h2 {
     text-align: center;
-    color: #444;a
-    margin-top: 10px;
-    margin-bottom: 20px;
-    /* Tăng khoảng cách dưới */
+    /* Căn giữa tiêu đề */
+    color: #444;
+    /* Màu chữ tiêu đề đậm hơn chút */
+    margin-top: 20px;
+    /* Khoảng cách phía trên tiêu đề */
+    margin-bottom: 25px;
+    /* Khoảng cách phía dưới tiêu đề */
     font-weight: 600;
-    /* Đậm hơn chút */
+    /* Tăng độ đậm cho tiêu đề */
 }
+
+/* ================================== */
+/* == BỐ CỤC CHÍNH (2 CỘT) == */
+/* ================================== */
 
 .container {
     display: flex;
+    /* Sử dụng Flexbox để tạo layout 2 cột */
     gap: 30px;
-    /* Tăng khoảng cách giữa 2 cột */
-    max-width: 1200px;
-    /* Giới hạn chiều rộng tối đa */
-    margin: 0 auto;
-    /* Căn giữa container */
+    /* Khoảng cách giữa cột trái và cột phải */
+    max-width: 1400px;
+    /* Tăng chiều rộng tối đa của container */
+    margin: 0 auto 30px auto;
+    /* Căn giữa container và thêm khoảng cách dưới */
 }
 
 .column {
     background-color: #fff;
+    /* Nền trắng cho các cột */
     padding: 20px;
-    /* Tăng padding */
+    /* Khoảng đệm bên trong cột */
     border-radius: 8px;
-    /* Bo góc nhiều hơn */
+    /* Bo góc nhẹ */
     box-shadow: 0 3px 6px rgba(0, 0, 0, 0.1);
-    /* Đổ bóng rõ hơn */
+    /* Đổ bóng nhẹ */
 }
 
 .left-column {
-    flex: 3;
-    /* Cột trái chiếm nhiều không gian hơn */
+    flex: 3; /* Cột trái chiếm 3 phần */
     display: flex;
     flex-direction: column;
 }
 
 .right-column {
-    flex: 2;
-    /* Cột phải chiếm ít không gian hơn */
-    max-height: 70vh;
-    /* Giới hạn chiều cao cột phải */
-    overflow-y: auto;
-    /* Thêm thanh cuộn nếu nội dung dài */
+    flex: 1; /* Cột phải chiếm 1 phần */
+    display: flex; 
+    flex-direction: column; 
 }
 
-textarea {
-    width: calc(100% - 12px);
-    /* Chiều rộng trừ đi padding */
-    min-height: 300px;
-    /* Tăng chiều cao tối thiểu */
+/* ================================== */
+/* == CÁC THÀNH PHẦN TRONG CỘT TRÁI == */
+/* ================================== */
+
+textarea#instructionInput {
+    width: calc(100% - 22px); /* Chiều rộng 100% trừ padding và border */
+    height: 350px; /* Chiều cao textarea theo yêu cầu của bạn */
+    /* min-height: 150px; */
+    /* flex-grow: 0; */
     margin-bottom: 15px;
     font-family: monospace;
-    /* Font cho code */
     border: 1px solid #ced4da;
     border-radius: 4px;
     padding: 10px;
     font-size: 1em;
-    /* Tăng kích thước font */
     line-height: 1.5;
     resize: vertical;
 }
 
-button#assembleButton {
-    /* Chỉ style nút Assemble */
-    display: block;
-    /* Để nút chiếm cả dòng */
-    width: 150px;
-    /* Độ rộng cố định */
+/* --- Khu vực chứa các nút điều khiển chính --- */
+.controls {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-around;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 20px;
+}
+
+/* Style chung cho các nút điều khiển chính */
+/* Bỏ các margin inline trong HTML của button nếu đã có gap ở .controls */
+#assembleButton,
+#runButton,
+#stepButton,
+#resetButton {
+    min-width: 90px;
     padding: 10px 15px;
-    margin: 0 auto 15px auto;
-    /* Căn giữa nút */
     cursor: pointer;
     background-color: #007bff;
-    /* Màu xanh dương */
     color: white;
     border: none;
     border-radius: 5px;
-    font-size: 1em;
+    font-size: 0.95em;
     font-weight: bold;
+    text-align: center;
     transition: background-color 0.2s;
 }
 
-button#assembleButton:hover {
+#assembleButton:hover,
+#runButton:hover,
+#stepButton:hover,
+#resetButton:hover {
     background-color: #0056b3;
 }
 
-button#assembleButton:active {
+#assembleButton:active,
+#runButton:active,
+#stepButton:active,
+#resetButton:active {
     background-color: #004085;
 }
 
-pre {
+pre#binaryOutput {
     background-color: #e9ecef;
-    /* Màu nền output */
     padding: 15px;
     border: 1px solid #ced4da;
     border-radius: 4px;
     white-space: pre-wrap;
     word-wrap: break-word;
-    min-height: 100px;
-    /* Chiều cao tối thiểu */
+    min-height: 80px;
     max-height: 250px;
     overflow-y: auto;
     font-family: monospace;
-    /* Font cho output nhị phân */
     font-size: 0.95em;
     line-height: 1.6;
-    margin-bottom: 15px;
 }
 
-/* Style cho bảng thanh ghi */
-#registerTable {
+/* ================================== */
+/* == BẢNG THANH GHI (CỘT PHẢI) == */
+/* ================================== */
+
+/* --- Khu vực nút chuyển đổi bảng thanh ghi --- */
+.register-view-toggle {
+    margin-bottom: 15px;
+    text-align: center;
+}
+
+#toggleRegisterViewButton {
+    padding: 8px 15px;
+    background-color: #6c757d;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 0.9em;
+    transition: background-color 0.2s;
+}
+
+#toggleRegisterViewButton:hover {
+    background-color: #5a6268;
+}
+
+/* --- Style chung cho các bảng hiển thị thanh ghi --- */
+.register-display-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.9em;
+    font-size: 0.9em; /* Font chung cho nội dung bảng */
+    margin-top: 0;
+    display: none; /* ẨN TẤT CẢ CÁC BẢNG THANH GHI THEO MẶC ĐỊNH */
 }
 
-#registerTable th,
-#registerTable td {
+.register-display-table.active-table {
+    display: table !important; /* CHỈ HIỂN THỊ BẢNG CÓ CLASS 'active-table' */
+}
+
+.register-display-table th,
+.register-display-table td {
     border: 1px solid #dee2e6;
-    padding: 8px 10px;
+    padding: 7px 10px;
     text-align: left;
-
-    /* Căn phải cho cột số */
-    &:nth-child(2),
-    &:nth-child(3) &:nth-child(4) {
-        text-align: right;
-        font-family: monospace;
-        /* Font monospace cho giá trị số */
-    }
 }
 
-#registerTable th {
+.register-display-table th {
+    background-color: #f1f3f5;
+    font-weight: 600;
+    position: sticky; /* Giữ header cố định khi cuộn trong .right-column */
+    top: 0; 
+    z-index: 1;
+}
+
+/* --- Bảng thanh ghi số nguyên (Integer Registers) --- */
+/* Cột "Value" (Hex - là cột thứ 2 của bảng #registerTable) */
+#registerTable td:nth-child(2) {
+    text-align: right;
+    font-family: monospace;
+    font-size: 1em; /* Font to bằng font body */
+}
+
+/* --- Bảng thanh ghi điểm động (Floating-Point Registers) --- */
+/* #fpRegisterTable sẽ được ẩn/hiện bằng class .active-table */
+
+/* Cột "Float Value" (cột thứ 2 của bảng FP) */
+#fpRegisterTable td:nth-child(2) {
+    text-align: right;      
+    font-family: monospace; 
+}
+
+/* Cột "Hex (Bits)" (cột thứ 3 của bảng FP) */
+#fpRegisterTable td:nth-child(3) {
+    text-align: right;
+    font-family: monospace;
+    font-size: 1em; /* Font to bằng font body */
+}
+
+/* --- Highlight cho thanh ghi thay đổi (áp dụng cho cả 2 bảng) --- */
+.register-display-table tr.highlight td {
+    background-color: #fff3cd !important;
+    transition: background-color 0.5s ease-out;
+}
+
+/* ================================== */
+/* == BẢNG DATA SEGMENT (Ở DƯỚI) == */
+/* ================================== */
+/* (Phần CSS cho Data Segment không thay đổi) */
+.data-segment-container {
+    margin-top: 30px;
+    padding: 20px;
+    background-color: #fff;
+    border-radius: 8px;
+    box-shadow: 0 3px 6px rgba(0, 0, 0, 0.1);
+    max-width: 1400px;
+    margin-left: auto;
+    margin-right: auto;
+    margin-bottom: 30px;
+}
+
+.address-search {
+    margin-bottom: 15px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+}
+
+.address-search label {
+    font-weight: bold;
+    margin-right: 5px;
+}
+
+.address-search input[type="text"] {
+    padding: 6px 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-family: monospace;
+    width: 200px;
+}
+
+.address-search button,
+#toggleDataSegmentMode {
+    padding: 6px 12px;
+    cursor: pointer;
+    background-color: #6c757d;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    font-size: 0.9em;
+    transition: background-color 0.2s;
+}
+
+.address-search button:hover,
+#toggleDataSegmentMode:hover {
+    background-color: #5a6268;
+}
+
+.table-wrapper {
+    overflow-x: auto;
+}
+
+#dataSegmentTable {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85em;
+    font-family: monospace;
+    white-space: pre;
+    margin-top: 10px;
+}
+
+#dataSegmentTable th,
+#dataSegmentTable td {
+    border: 1px solid #dee2e6;
+    padding: 5px 8px;
+    text-align: center;
+    min-width: 75px;
+}
+
+#dataSegmentTable th {
     background-color: #f1f3f5;
     font-weight: 600;
     position: sticky;
-    /* Giữ header khi cuộn */
     top: 0;
-    /* Đặt ở đỉnh */
     z-index: 1;
-    /* Đảm bảo nằm trên nội dung */
 }
 
-#registerTable tr:nth-child(even) td {
-    /* Màu nền xen kẽ */
+#dataSegmentTable td:first-child {
+    text-align: left;
+    font-weight: bold;
     background-color: #f8f9fa;
+    min-width: 110px;
+    position: sticky;
+    left: 0;
+    z-index: 2;
 }
 
-/* Highlight cho thanh ghi thay đổi */
-#registerTable tr.highlight td {
-    background-color: #fff3cd;
-    transition: background-color 0.5s ease-out;
+#dataSegmentTable th:first-child {
+    z-index: 3;
 }

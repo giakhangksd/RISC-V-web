@@ -1,694 +1,729 @@
+// assembler.js
+// Chịu trách nhiệm biên dịch mã assembly RISC-V (RV32IMF) thành mã máy.
+// Thực hiện quy trình biên dịch hai lượt (two-pass) để xử lý các nhãn.
+
 export const assembler = {
-    memory: {},        // Bộ nhớ ảo (địa chỉ byte -> giá trị byte)
-    labels: {},        // Bảng nhãn { labelName: { address: number, isGlobal: boolean } | number (cho .equ) }
-    equValues: {},     // Lưu trữ giá trị của các hằng số .equ riêng biệt
-    currentSection: null, // Section hiện tại: 'data' hoặc 'text'
-    currentAddress: 0,   // Địa chỉ bộ nhớ hiện tại (tính bằng byte)
-    instructionLines: [], // Mảng lưu trữ các dòng lệnh gốc để xử lý sau khi có đủ label
-    binary: [],       // Mảng chứa mã nhị phân được tạo ra
+    // --- Trạng thái nội bộ của assembler, được reset mỗi khi biên dịch ---
+    memory: {},              // Lưu trữ dữ liệu và mã lệnh (địa chỉ byte -> giá trị byte)
+    labels: {},              // Bảng nhãn: { tenNhan: { diaChi, laToanCuc, kieu } }
+    equValues: {},           // Lưu giá trị của các hằng số định nghĩa bởi .eqv
+    currentSection: null,    // Section hiện tại: 'data' hoặc 'text'
+    currentAddress: 0,       // Địa chỉ bộ nhớ hiện tại trong quá trình biên dịch
+    instructionLines: [],    // Mảng lưu thông tin chi tiết của từng dòng mã sau Pass 1
+    binaryCode: [],          // Mảng chứa các lệnh đã được mã hóa {address, binary, hex}
+    textBaseAddress: 0x00400000, // Địa chỉ bắt đầu mặc định cho vùng mã .text
+    dataBaseAddress: 0x10010000, // Địa chỉ bắt đầu mặc định cho vùng dữ liệu .data
+    inDataSegment: false,    // Cờ cho biết có đang ở trong vùng .data hay không
 
-    // Ánh xạ tên thanh ghi (ABI Names và MIPS-style) sang tên RISC-V chuẩn (Xn)
+    // Ánh xạ các tên thanh ghi (ABI, MIPS-style, ...) sang tên chuẩn Xn hoặc Fn để tiện xử lý
     registerMapping: {
-        '$ZERO': 'X0', '$0': 'X0', 'ZERO': 'X0',
-        '$RA': 'X1', '$1': 'X1', 'RA': 'X1',
-        '$SP': 'X2', '$2': 'X2', 'SP': 'X2',
-        '$GP': 'X3', '$3': 'X3', 'GP': 'X3',
-        '$TP': 'X4', '$4': 'X4', 'TP': 'X4',
-        '$T0': 'X5', '$5': 'X5', 'T0': 'X5',
-        '$T1': 'X6', '$6': 'X6', 'T1': 'X6',
-        '$T2': 'X7', '$7': 'X7', 'T2': 'X7',
-        '$S0': 'X8', '$8': 'X8', 'S0': 'X8', '$FP': 'X8', 'FP': 'X8', // FP là alias của S0
-        '$S1': 'X9', '$9': 'X9', 'S1': 'X9',
-        '$A0': 'X10', '$10': 'X10', 'A0': 'X10',
-        '$A1': 'X11', '$11': 'X11', 'A1': 'X11',
-        '$A2': 'X12', '$12': 'X12', 'A2': 'X12',
-        '$A3': 'X13', '$13': 'X13', 'A3': 'X13',
-        '$A4': 'X14', '$14': 'X14', 'A4': 'X14',
-        '$A5': 'X15', '$15': 'X15', 'A5': 'X15',
-        '$A6': 'X16', '$16': 'X16', 'A6': 'X16',
-        '$A7': 'X17', '$17': 'X17', 'A7': 'X17',
-        '$S2': 'X18', '$18': 'X18', 'S2': 'X18',
-        '$S3': 'X19', '$19': 'X19', 'S3': 'X19',
-        '$S4': 'X20', '$20': 'X20', 'S4': 'X20',
-        '$S5': 'X21', '$21': 'X21', 'S5': 'X21',
-        '$S6': 'X22', '$22': 'X22', 'S6': 'X22',
-        '$S7': 'X23', '$23': 'X23', 'S7': 'X23',
-        '$S8': 'X24', '$24': 'X24', 'S8': 'X24',
-        '$S9': 'X25', '$25': 'X25', 'S9': 'X25',
-        '$S10': 'X26', '$26': 'X26', 'S10': 'X26',
-        '$S11': 'X27', '$27': 'X27', 'S11': 'X27',
-        '$T3': 'X28', '$28': 'X28', 'T3': 'X28',
-        '$T4': 'X29', '$29': 'X29', 'T4': 'X29',
-        '$T5': 'X30', '$30': 'X30', 'T5': 'X30',
-        '$T6': 'X31', '$31': 'X31', 'T6': 'X31',
-        // Thêm cả tên X0, X1,... để chuẩn hóa cả trường hợp viết hoa/thường
-        'X0': 'X0', 'X1': 'X1', 'X2': 'X2', 'X3': 'X3', 'X4': 'X4', 'X5': 'X5',
-        'X6': 'X6', 'X7': 'X7', 'X8': 'X8', 'X9': 'X9', 'X10': 'X10', 'X11': 'X11',
-        'X12': 'X12', 'X13': 'X13', 'X14': 'X14', 'X15': 'X15', 'X16': 'X16', 'X17': 'X17',
-        'X18': 'X18', 'X19': 'X19', 'X20': 'X20', 'X21': 'X21', 'X22': 'X22', 'X23': 'X23',
-        'X24': 'X24', 'X25': 'X25', 'X26': 'X26', 'X27': 'X27', 'X28': 'X28', 'X29': 'X29',
-        'X30': 'X30', 'X31': 'X31'
+        // Thanh ghi số nguyên (Integer Registers)
+        '$ZERO': 'X0', '$0': 'X0', 'ZERO': 'X0', 'X0': 'X0',
+        '$RA': 'X1', '$1': 'X1', 'RA': 'X1', 'X1': 'X1',
+        '$SP': 'X2', '$2': 'X2', 'SP': 'X2', 'X2': 'X2',
+        '$GP': 'X3', '$3': 'X3', 'GP': 'X3', 'X3': 'X3',
+        '$TP': 'X4', '$4': 'X4', 'TP': 'X4', 'X4': 'X4',
+        '$T0': 'X5', '$5': 'X5', 'T0': 'X5', 'X5': 'X5',
+        '$T1': 'X6', '$6': 'X6', 'T1': 'X6', 'X6': 'X6',
+        '$T2': 'X7', '$7': 'X7', 'T2': 'X7', 'X7': 'X7',
+        '$S0': 'X8', '$8': 'X8', 'S0': 'X8', '$FP': 'X8', 'FP': 'X8', 'X8': 'X8',
+        '$S1': 'X9', '$9': 'X9', 'S1': 'X9', 'X9': 'X9',
+        '$A0': 'X10', '$10': 'X10', 'A0': 'X10', 'X10': 'X10',
+        '$A1': 'X11', '$11': 'X11', 'A1': 'X11', 'X11': 'X11',
+        '$A2': 'X12', '$12': 'X12', 'A2': 'X12', 'X12': 'X12',
+        '$A3': 'X13', '$13': 'X13', 'A3': 'X13', 'X13': 'X13',
+        '$A4': 'X14', '$14': 'X14', 'A4': 'X14', 'X14': 'X14',
+        '$A5': 'X15', '$15': 'X15', 'A5': 'X15', 'X15': 'X15',
+        '$A6': 'X16', '$16': 'X16', 'A6': 'X16', 'X16': 'X16',
+        '$A7': 'X17', '$17': 'X17', 'A7': 'X17', 'X17': 'X17',
+        '$S2': 'X18', '$18': 'X18', 'S2': 'X18', 'X18': 'X18',
+        '$S3': 'X19', '$19': 'X19', 'S3': 'X19', 'X19': 'X19',
+        '$S4': 'X20', '$20': 'X20', 'S4': 'X20', 'X20': 'X20',
+        '$S5': 'X21', '$21': 'X21', 'S5': 'X21', 'X21': 'X21',
+        '$S6': 'X22', '$22': 'X22', 'S6': 'X22', 'X22': 'X22',
+        '$S7': 'X23', '$23': 'X23', 'S7': 'X23', 'X23': 'X23',
+        '$S8': 'X24', '$24': 'X24', 'S8': 'X24', 'X24': 'X24',
+        '$S9': 'X25', '$25': 'X25', 'S9': 'X25', 'X25': 'X25',
+        '$S10': 'X26', '$26': 'X26', 'S10': 'X26', 'X26': 'X26',
+        '$S11': 'X27', '$27': 'X27', 'S11': 'X27', 'X27': 'X27',
+        '$T3': 'X28', '$28': 'X28', 'T3': 'X28', 'X28': 'X28',
+        '$T4': 'X29', '$29': 'X29', 'T4': 'X29', 'X29': 'X29',
+        '$T5': 'X30', '$30': 'X30', 'T5': 'X30', 'X30': 'X30',
+        '$T6': 'X31', '$31': 'X31', 'T6': 'X31', 'X31': 'X31',
+        // Thanh ghi điểm động (Floating-Point Registers)
+        'F0': 'F0', 'FT0': 'F0', 'F1': 'F1', 'FT1': 'F1', 'F2': 'F2', 'FT2': 'F2',
+        'F3': 'F3', 'FT3': 'F3', 'F4': 'F4', 'FT4': 'F4', 'F5': 'F5', 'FT5': 'F5',
+        'F6': 'F6', 'FT6': 'F6', 'F7': 'F7', 'FT7': 'F7', 'F8': 'F8', 'FS0': 'F8',
+        'F9': 'F9', 'FS1': 'F9', 'F10': 'F10', 'FA0': 'F10', 'F11': 'F11', 'FA1': 'F11',
+        'F12': 'F12', 'FA2': 'F12', 'F13': 'F13', 'FA3': 'F13', 'F14': 'F14', 'FA4': 'F14',
+        'F15': 'F15', 'FA5': 'F15', 'F16': 'F16', 'FA6': 'F16', 'F17': 'F17', 'FA7': 'F17',
+        'F18': 'F18', 'FS2': 'F18', 'F19': 'F19', 'FS3': 'F19', 'F20': 'F20', 'FS4': 'F20',
+        'F21': 'F21', 'FS5': 'F21', 'F22': 'F22', 'FS6': 'F22', 'F23': 'F23', 'FS7': 'F23',
+        'F24': 'F24', 'FS8': 'F24', 'F25': 'F25', 'FS9': 'F25', 'F26': 'F26', 'FS10': 'F26',
+        'F27': 'F27', 'FS11': 'F27', 'F28': 'F28', 'FT8': 'F28', 'F29': 'F29', 'FT9': 'F29',
+        'F30': 'F30', 'FT10': 'F30', 'F31': 'F31', 'FT11': 'F31',
     },
 
-    // Định nghĩa các chỉ thị assembler và hàm xử lý tương ứng
+    // Bảng điều phối, ánh xạ tên chỉ thị sang hàm xử lý tương ứng
     directives: {
-        ".data": { minArgs: 0, maxArgs: 1, handler: function (args) { this._handleDataDirective(args); } },
-        ".text": { minArgs: 0, maxArgs: 1, handler: function (args) { this._handleTextDirective(args); } },
-        ".word": { minArgs: 1, maxArgs: Infinity, handler: function (args) { this._handleWordDirective(args); } },
-        ".half": { minArgs: 1, maxArgs: Infinity, handler: function (args) { this._handleHalfDirective(args); } },
-        ".byte": { minArgs: 1, maxArgs: Infinity, handler: function (args) { this._handleByteDirective(args); } },
-        ".ascii": { minArgs: 1, maxArgs: 1, handler: function (args) { this._handleAsciiDirective(args); } },
-        ".asciiz": { minArgs: 1, maxArgs: 1, handler: function (args) { this._handleAsciizDirective(args); } },
-        ".space": { minArgs: 1, maxArgs: 1, handler: function (args) { this._handleSpaceDirective(args); } },
-        ".align": { minArgs: 1, maxArgs: 1, handler: function (args) { this._handleAlignDirective(args); } },
-        ".global": { minArgs: 1, maxArgs: 1, handler: function (args) { this._handleGlobalDirective(args); } },
-        ".globl": { minArgs: 1, maxArgs: 1, handler: function (args) { this._handleGlobalDirective(args); } }, // .globl là alias của .global
-        ".extern": { minArgs: 2, maxArgs: 2, handler: function (args) { this._handleExternDirective(args); } },
-        ".equ": { minArgs: 2, maxArgs: 2, handler: function (args) { this._handleEquDirective(args); } },
-        // Thêm các chỉ thị khác nếu cần
+        '.text': function (operands) { this._handleTextDirective(operands); },
+        '.data': function (operands) { this._handleDataDirective(operands); },
+        '.word': function (operands) { this._handleWordDirective(operands); },
+        '.half': function (operands) { this._handleHalfDirective(operands); },
+        '.byte': function (operands) { this._handleByteDirective(operands); },
+        '.float': function (operands) { this._handleFloatDirective(operands); },
+        '.single': function (operands) { this._handleFloatDirective(operands); }, // Tên khác của .float
+        '.ascii': function (operands) { this._handleStringDirective(operands, false); },
+        '.asciiz': function (operands) { this._handleStringDirective(operands, true); },
+        '.string': function (operands) { this._handleStringDirective(operands, true); }, // Tên khác của .asciiz
+        '.space': function (operands) { this._handleSpaceDirective(operands); },
+        '.align': function (operands) { this._handleAlignDirective(operands); },
+        '.globl': function (operands) { this._handleGlobalDirective(operands); },
+        '.global': function (operands) { this._handleGlobalDirective(operands); },
+        '.extern': function (operands) { this._handleExternDirective(operands); },
+        '.eqv': function (operands) { this._handleEquDirective(operands); },
+        '.org': function (operands) { this._handleOrgDirective(operands); }, // Chỉ thị đặt địa chỉ
     },
 
-    // Định nghĩa định dạng các lệnh RISC-V
-    instructionFormats: {
-        // R-Type
-        "ADD": { type: "R", opcode: "0110011", funct3: "000", funct7: "0000000" },
-        "SUB": { type: "R", opcode: "0110011", funct3: "000", funct7: "0100000" },
-        "SLL": { type: "R", opcode: "0110011", funct3: "001", funct7: "0000000" },
-        "SLT": { type: "R", opcode: "0110011", funct3: "010", funct7: "0000000" },
-        "SLTU": { type: "R", opcode: "0110011", funct3: "011", funct7: "0000000" },
-        "XOR": { type: "R", opcode: "0110011", funct3: "100", funct7: "0000000" },
-        "SRL": { type: "R", opcode: "0110011", funct3: "101", funct7: "0000000" },
-        "SRA": { type: "R", opcode: "0110011", funct3: "101", funct7: "0100000" },
-        "OR": { type: "R", opcode: "0110011", funct3: "110", funct7: "0000000" },
-        "AND": { type: "R", opcode: "0110011", funct3: "111", funct7: "0000000" },
-        // I-Type
-        "LW": { type: "I", opcode: "0000011", funct3: "010" },
-        "LH": { type: "I", opcode: "0000011", funct3: "001" },
-        "LB": { type: "I", opcode: "0000011", funct3: "000" },
-        "LHU": { type: "I", opcode: "0000011", funct3: "101" },
-        "LBU": { type: "I", opcode: "0000011", funct3: "100" },
-        "ADDI": { type: "I", opcode: "0010011", funct3: "000" },
-        "SLTI": { type: "I", opcode: "0010011", funct3: "010" },
-        "SLTIU": { type: "I", opcode: "0010011", funct3: "011" },
-        "XORI": { type: "I", opcode: "0010011", funct3: "100" },
-        "ORI": { type: "I", opcode: "0010011", funct3: "110" },
-        "ANDI": { type: "I", opcode: "0010011", funct3: "111" },
-        "SLLI": { type: "I", opcode: "0010011", funct3: "001", funct7: "0000000" }, // Shift amount trong imm[4:0]
-        "SRLI": { type: "I", opcode: "0010011", funct3: "101", funct7: "0000000" }, // Shift amount trong imm[4:0]
-        "SRAI": { type: "I", opcode: "0010011", funct3: "101", funct7: "0100000" }, // Shift amount trong imm[4:0]
-        "JALR": { type: "I", opcode: "1100111", funct3: "000" },
-        // S-Type
-        "SW": { type: "S", opcode: "0100011", funct3: "010" },
-        "SH": { type: "S", opcode: "0100011", funct3: "001" },
-        "SB": { type: "S", opcode: "0100011", funct3: "000" },
-        // B-Type
-        "BEQ": { type: "B", opcode: "1100011", funct3: "000" },
-        "BNE": { type: "B", opcode: "1100011", funct3: "001" },
-        "BLT": { type: "B", opcode: "1100011", funct3: "100" },
-        "BGE": { type: "B", opcode: "1100011", funct3: "101" },
-        "BLTU": { type: "B", opcode: "1100011", funct3: "110" },
-        "BGEU": { type: "B", opcode: "1100011", funct3: "111" },
-        // U-Type
-        "LUI": { type: "U", opcode: "0110111" },
-        "AUIPC": { type: "U", opcode: "0010111" },
-        // J-Type
-        "JAL": { type: "J", opcode: "1101111" },
-        // System instructions (Ví dụ: ecall)
-        "ECALL": { type: "I", opcode: "1110011", funct3: "000", imm: "000000000000" }, // Immediate 12-bit là 0
-        // Thêm các lệnh khác nếu cần
+    // Bảng định nghĩa các lệnh và thông tin mã hóa của chúng
+    opcodes: {
+        // ----- RV32I Base Integer Instructions -----
+        'lb':    { opcode: '0000011', funct3: '000', type: 'I' }, 'lh': { opcode: '0000011', funct3: '001', type: 'I' },
+        'lw':    { opcode: '0000011', funct3: '010', type: 'I' }, 'lbu': { opcode: '0000011', funct3: '100', type: 'I' },
+        'lhu':   { opcode: '0000011', funct3: '101', type: 'I' }, 'sb': { opcode: '0100011', funct3: '000', type: 'S' },
+        'sh':    { opcode: '0100011', funct3: '001', type: 'S' }, 'sw': { opcode: '0100011', funct3: '010', type: 'S' },
+        'addi':  { opcode: '0010011', funct3: '000', type: 'I' }, 'slti': { opcode: '0010011', funct3: '010', type: 'I' },
+        'sltiu': { opcode: '0010011', funct3: '011', type: 'I' }, 'xori': { opcode: '0010011', funct3: '100', type: 'I' },
+        'ori':   { opcode: '0010011', funct3: '110', type: 'I' }, 'andi': { opcode: '0010011', funct3: '111', type: 'I' },
+        'slli':  { opcode: '0010011', funct3: '001', funct7: '0000000', type: 'I-shamt' },
+        'srli':  { opcode: '0010011', funct3: '101', funct7: '0000000', type: 'I-shamt' },
+        'srai':  { opcode: '0010011', funct3: '101', funct7: '0100000', type: 'I-shamt' },
+        'add':   { opcode: '0110011', funct3: '000', funct7: '0000000', type: 'R' },
+        'sub':   { opcode: '0110011', funct3: '000', funct7: '0100000', type: 'R' },
+        'sll':   { opcode: '0110011', funct3: '001', funct7: '0000000', type: 'R' },
+        'slt':   { opcode: '0110011', funct3: '010', funct7: '0000000', type: 'R' },
+        'sltu':  { opcode: '0110011', funct3: '011', funct7: '0000000', type: 'R' },
+        'xor':   { opcode: '0110011', funct3: '100', funct7: '0000000', type: 'R' },
+        'srl':   { opcode: '0110011', funct3: '101', funct7: '0000000', type: 'R' },
+        'sra':   { opcode: '0110011', funct3: '101', funct7: '0100000', type: 'R' },
+        'or':    { opcode: '0110011', funct3: '110', funct7: '0000000', type: 'R' },
+        'and':   { opcode: '0110011', funct3: '111', funct7: '0000000', type: 'R' },
+        'lui':   { opcode: '0110111', type: 'U' }, 'auipc': { opcode: '0010111', type: 'U' },
+        'jal':   { opcode: '1101111', type: 'J' }, 'jalr': { opcode: '1100111', funct3: '000', type: 'I' },
+        'beq':   { opcode: '1100011', funct3: '000', type: 'B' }, 'bne': { opcode: '1100011', funct3: '001', type: 'B' },
+        'blt':   { opcode: '1100011', funct3: '100', type: 'B' }, 'bge': { opcode: '1100011', funct3: '101', type: 'B' },
+        'bltu':  { opcode: '1100011', funct3: '110', type: 'B' }, 'bgeu': { opcode: '1100011', funct3: '111', type: 'B' },
+        'ecall': { opcode: '1110011', funct3: '000', funct7: '0000000', type: 'I' },
+        'ebreak':{ opcode: '1110011', funct3: '000', funct7: '0000001', type: 'I' },
+        'fence': { opcode: '0001111', funct3: '000', type: 'I' },
+
+        // ----- RV32M Standard Extension (Multiply/Divide) -----
+        'mul':    { opcode: '0110011', funct3: '000', funct7: '0000001', type: 'R' },
+        'mulh':   { opcode: '0110011', funct3: '001', funct7: '0000001', type: 'R' },
+        'mulhsu': { opcode: '0110011', funct3: '010', funct7: '0000001', type: 'R' },
+        'mulhu':  { opcode: '0110011', funct3: '011', funct7: '0000001', type: 'R' },
+        'div':    { opcode: '0110011', funct3: '100', funct7: '0000001', type: 'R' },
+        'divu':   { opcode: '0110011', funct3: '101', funct7: '0000001', type: 'R' },
+        'rem':    { opcode: '0110011', funct3: '110', funct7: '0000001', type: 'R' },
+        'remu':   { opcode: '0110011', funct3: '111', funct7: '0000001', type: 'R' },
+
+        // ----- RV32F Standard Extension (Single-Precision Floating-Point) -----
+        'flw': { opcode: '0000111', funct3: '010', type: 'I-FP' },
+        'fsw': { opcode: '0100111', funct3: '010', type: 'S-FP' },
+
+        'fadd.s':  { opcode: '1010011', funct7: '0000000', type: 'R-FP' },
+        'fsub.s':  { opcode: '1010011', funct7: '0000100', type: 'R-FP' },
+        'fmul.s':  { opcode: '1010011', funct7: '0001000', type: 'R-FP' },
+        'fdiv.s':  { opcode: '1010011', funct7: '0001100', type: 'R-FP' },
+        
+        'fsgnj.s':  { opcode: '1010011', funct3: '000', funct7: '0010000', type: 'R-FP' },
+        'fsgnjn.s': { opcode: '1010011', funct3: '001', funct7: '0010000', type: 'R-FP' },
+        'fsgnjx.s': { opcode: '1010011', funct3: '010', funct7: '0010000', type: 'R-FP' },
+
+        'fcvt.w.s':  { opcode: '1010011', funct7: '1100000', rs2_subfield: '00000', type: 'R-FP-CVT', dest_is_int: true, src1_is_fp: true },
+        'fcvt.wu.s': { opcode: '1010011', funct7: '1100000', rs2_subfield: '00001', type: 'R-FP-CVT', dest_is_int: true, src1_is_fp: true },
+        'fcvt.s.w':  { opcode: '1010011', funct7: '1101000', rs2_subfield: '00000', type: 'R-FP-CVT', dest_is_fp: true, src1_is_int: true },
+        'fcvt.s.wu': { opcode: '1010011', funct7: '1101000', rs2_subfield: '00001', type: 'R-FP-CVT', dest_is_fp: true, src1_is_int: true },
+
+        'feq.s': { opcode: '1010011', funct3: '010', funct7: '1010000', type: 'R-FP-CMP', dest_is_int: true },
+        'flt.s': { opcode: '1010011', funct3: '001', funct7: '1010000', type: 'R-FP-CMP', dest_is_int: true },
+        'fle.s': { opcode: '1010011', funct3: '000', funct7: '1010000', type: 'R-FP-CMP', dest_is_int: true },
+
+        'fmv.x.w': { opcode: '1010011', funct3: '000', funct7: '1110000', rs2_subfield: '00000', type: 'R-FP-CVT', dest_is_int: true, src1_is_fp: true },
+        'fmv.w.x': { opcode: '1010011', funct3: '000', funct7: '1111000', rs2_subfield: '00000', type: 'R-FP-CVT', dest_is_fp: true, src1_is_int: true },
+
+        // ----- Pseudo Instructions -----
+        'nop':  { type: 'Pseudo', expandsTo: 'addi', args: ['x0', 'x0', '0'] },
+        'li':   { type: 'Pseudo' },
+        'mv':   { type: 'Pseudo', expandsTo: 'addi', args: [null, null, '0'] },
+        'j':    { type: 'Pseudo', expandsTo: 'jal', args: ['x0', null] },
+        'jr':   { type: 'Pseudo', expandsTo: 'jalr', args: ['x0', null, '0'] },
+        'ret':  { type: 'Pseudo', expandsTo: 'jalr', args: ['x0', 'x1', '0'] },
+        'call': { type: 'Pseudo' },
+        'bnez': { type: 'Pseudo', expandsTo: 'bne', args: [null, 'x0', null] },
+        'beqz': { type: 'Pseudo', expandsTo: 'beq', args: [null, 'x0', null] },
+        'la':   { type: 'Pseudo' },
+        'fmv.s': { type: 'Pseudo', expandsTo: 'fsgnj.s', args: [null, null, null] },
+        'fabs.s':{ type: 'Pseudo', expandsTo: 'fsgnjx.s', args: [null, null, null] },
+        'fneg.s':{ type: 'Pseudo', expandsTo: 'fsgnjn.s', args: [null, null, null] },
     },
 
-    /**
-     * Hàm chính để biên dịch mã hợp ngữ.
-     * @param {string} assemblyCode - Chuỗi chứa mã hợp ngữ.
-     * @returns {string[]} - Mảng chứa các chuỗi mã nhị phân.
-     */
+    // Hàm chính, điều phối quá trình biên dịch
     assemble(assemblyCode) {
-        // Reset trạng thái biên dịch
         this._reset();
+        this._pass1(assemblyCode);
+        this._pass2();
 
-        const lines = assemblyCode.split("\n");
-
-        // ===== PASS 1: Xử lý chỉ thị, nhãn và tính toán địa chỉ =====
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            try {
-                const parsedLine = this._parseLine(line, i); // Truyền cả số dòng để báo lỗi
-                if (parsedLine) {
-                    // Nếu là lệnh, tính toán địa chỉ và lưu trữ để dùng ở Pass 2
-                    if (parsedLine.type === 'instruction') {
-                        parsedLine.address = this.currentAddress; // Gán địa chỉ cho lệnh
-                        this.currentAddress += 4; // Lệnh RISC-V dài 4 byte
-                    }
-                    this.instructionLines.push(parsedLine); // Lưu dòng đã phân tích
-                }
-            } catch (error) {
-                console.error(`Error assembling line ${i + 1}: ${line}\n`, error);
-                throw new Error(`Line ${i + 1}: ${error.message}`); // Re-throw với số dòng
-            }
+        // Xác định địa chỉ bắt đầu của chương trình
+        let startAddress = this.labels['_start']?.address ?? this.labels['main']?.address;
+        if (startAddress === undefined) {
+            const firstInstr = this.instructionLines.find(l => (l.type === 'instruction' || l.type === 'pseudo-instruction') && l.address !== undefined);
+            startAddress = firstInstr ? firstInstr.address : this.textBaseAddress;
         }
 
-        // ===== PASS 2: Sinh mã nhị phân =====
-        for (const instr of this.instructionLines) {
-            if (instr.type === "instruction") {
-                this.currentAddress = instr.address; // Cập nhật lại currentAddress cho Pass 2
-                const mc = this._riscvToBinary(instr.line);
-                if (mc && typeof mc === 'string' && !mc.startsWith('Error:')) { // Chỉ push mã nhị phân hợp lệ
-                    this.binary.push(mc);
-                } else if (mc && mc.startsWith('Error:')) {
-                    throw new Error(`Instruction "${instr.line}": ${mc}`); // Ném lỗi nếu riscvToBinary trả về lỗi
-                }
-            }
-        }
-
-        console.log("Assembly Pass 1 - Labels:", this.labels);
-        console.log("Assembly Pass 1 - Memory:", this.memory);
-        console.log("Assembly Pass 2 - Binary:", this.binary);
-        return this.binary; // Trả về mảng mã nhị phân
-    },
-
-    /**
-     * Reset trạng thái của assembler.
-     * @private
-     */
-    _reset() {
-        this.memory = {};
-        this.labels = {};
-        this.equValues = {};
-        this.currentSection = null;
-        this.currentAddress = 0;
-        this.instructionLines = [];
-        this.binary = [];
-    },
-
-    /**
-     * Phân tích cú pháp một dòng mã hợp ngữ.
-     * @param {string} line - Dòng mã hợp ngữ.
-     * @param {number} lineNumber - Số dòng (để báo lỗi).
-     * @returns {object|null} - Đối tượng biểu diễn dòng đã phân tích hoặc null.
-     * @private
-     */
-    _parseLine(line, lineNumber) {
-        line = line.trim();
-        if (!line) return null;
-
-        // Loại bỏ comment
-        const commentIndex = line.indexOf("#");
-        if (commentIndex !== -1) {
-            line = line.substring(0, commentIndex).trim();
-        }
-        if (!line) return null;
-
-        // Xử lý nhãn (Label) ở đầu dòng
-        if (line.includes(':') && !line.startsWith('.')) {
-            const labelEndIndex = line.indexOf(':');
-            const label = line.substring(0, labelEndIndex).trim();
-            const remainingLine = line.substring(labelEndIndex + 1).trim();
-
-            // Kiểm tra tên nhãn hợp lệ (ví dụ: chỉ chứa chữ cái, số, dấu gạch dưới, bắt đầu bằng chữ cái hoặc dấu gạch dưới)
-            if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(label)) {
-                throw new Error(`Invalid label name: "${label}"`);
-            }
-
-            if (this.labels[label] && this.labels[label].address !== undefined) {
-                throw new Error(`Duplicate label definition: "${label}"`);
-            }
-            // Lưu hoặc cập nhật nhãn với địa chỉ hiện tại
-            this.labels[label] = { ...this.labels[label], address: this.currentAddress };
-
-            // Nếu có lệnh hoặc chỉ thị trên cùng dòng với nhãn, xử lý tiếp
-            if (remainingLine) {
-                return this._parseLine(remainingLine, lineNumber); // Đệ quy để xử lý phần còn lại
-            } else {
-                return { type: "label", name: label, address: this.currentAddress }; // Trả về thông tin nhãn
-            }
-
-        } else if (line.startsWith(".")) {
-            // Xử lý chỉ thị (Directive)
-            const parts = line.split(/\s+/);
-            const directive = parts[0].toLowerCase();
-            const args = parts.slice(1).join(' ').split(',').map(arg => arg.trim()).filter(arg => arg !== ''); // Xử lý tham số phức tạp hơn
-
-            // Xử lý chuỗi trong .ascii và .asciiz
-            if ((directive === '.ascii' || directive === '.asciiz') && line.includes('"')) {
-                const firstQuote = line.indexOf('"');
-                const lastQuote = line.lastIndexOf('"');
-                if (firstQuote !== -1 && lastQuote > firstQuote) {
-                    args = [line.substring(firstQuote)]; // Lấy toàn bộ chuỗi làm một tham số
-                }
-            }
-
-            if (this.directives[directive]) {
-                const { minArgs, maxArgs, handler } = this.directives[directive];
-
-                // Kiểm tra số lượng tham số (linh hoạt hơn)
-                if (args.length < minArgs || (maxArgs !== Infinity && args.length > maxArgs)) {
-                    throw new Error(`Invalid number of arguments for directive ${directive}. Expected ${minArgs}${maxArgs === Infinity ? '+' : '-' + maxArgs}, got ${args.length}`);
-                }
-
-                handler.call(this, args); // Gọi hàm xử lý, `this` trỏ đến assembler
-                return { type: "directive", name: directive, args: args }; // Trả về thông tin chỉ thị
-            } else {
-                throw new Error(`Unknown directive: "${directive}"`);
-            }
-        } else {
-            // Xử lý lệnh (Instruction)
-            if (this.currentSection === "text") {
-                return { type: "instruction", line: line }; // Trả về dòng lệnh gốc
-            } else if (this.currentSection === "data") {
-                throw new Error(`Instruction "${line}" found in .data section.`);
-            } else {
-                console.warn(`Instruction or data "${line}" found outside of .text or .data section. Assuming .text.`);
-                this.currentSection = "text"; // Mặc định là .text nếu chưa xác định
-                return { type: "instruction", line: line };
-            }
-        }
-    },
-
-    /**
-     * Chuyển đổi một lệnh hợp ngữ thành mã nhị phân.
-     * @param {string} instruction - Dòng lệnh hợp ngữ gốc.
-     * @returns {string|null} - Chuỗi mã nhị phân hoặc null nếu có lỗi.
-     * @private
-     */
-    _riscvToBinary(instruction) {
-        // 1. Chuẩn hóa tên thanh ghi
-        const normalizedInstruction = this._normalizeRegisterNames(instruction);
-
-        // 2. Phân tích cú pháp lệnh (đã chuẩn hóa)
-        // Cần xử lý các trường hợp như lw rd, offset(rs1)
-        let parts;
-        const loadStoreMatch = normalizedInstruction.match(/^(\w+)\s+([^,]+),\s*(-?\d+)\((X\d+)\)$/i); // Match lw/sw rd, imm(rs1)
-        if (loadStoreMatch) {
-            parts = [loadStoreMatch[1], loadStoreMatch[2], loadStoreMatch[4], loadStoreMatch[3]]; // opcode, rd/rs2, rs1, imm
-        } else {
-            if (normalizedInstruction.match(/^(\w+)\s+([^,]+),\s*\(([^)]+)\)(-?\d+)$/i)) {
-                throw new Error(`Invalid load/store format: "${instruction}". Use "OP rd, imm(rs1)" syntax`);
-            }
-            parts = normalizedInstruction.trim().toUpperCase().split(/[,\s()]+/); // Basic fallback parsing
-        }
-
-        const opcode = parts[0].toUpperCase();
-
-        if (!this.instructionFormats[opcode]) {
-            // Có thể là lệnh giả? (Sẽ xử lý sau)
-            throw new Error(`Invalid or unsupported opcode: "${opcode}" in instruction "${instruction}"`);
-        }
-
-        const formatInfo = this.instructionFormats[opcode];
-        const { type, opcode: binOpcode, funct3, funct7 } = formatInfo;
-
-        let binaryInstruction = "";
-        let rd, rs1, rs2, imm, rdEncoded, rs1Encoded, rs2Encoded, immEncoded;
-
-        // Hàm encodeRegister và encodeImmediate nên được định nghĩa bên ngoài hoặc truyền vào
-        // Để dễ đọc, tạm thời giữ bên trong nhưng nên tách ra sau
-        const encodeRegister = (register) => {
-            const regName = this.registerMapping[register.toUpperCase()]; // Sử dụng mapping đã chuẩn hóa
-            if (!regName) {
-                throw new Error(`Invalid register name: "${register}" in instruction "${instruction}"`);
-            }
-            const regNumber = parseInt(regName.slice(1));
-            return regNumber.toString(2).padStart(5, '0');
+        return {
+            memory: this.memory,
+            startAddress: Number(startAddress) || 0,
+            instructions: this.binaryCode
         };
+    },
 
-        const encodeImmediate = (immediate, format) => {
-            let immValue;
-            if (isNaN(parseInt(immediate))) {
-                // Xử lý nhãn (label) hoặc giá trị .equ
-                if (this.equValues[immediate] !== undefined) {
-                    immValue = this.equValues[immediate];
-                } else if (this.labels[immediate] !== undefined && this.labels[immediate].address !== null) {
-                    let labelAddress = this.labels[immediate].address;
-                    // Tính toán offset tương đối cho lệnh branch và jump
-                    if (format === "B" || format === "J") {
-                        if (this.currentSection !== "text") {
-                            throw new Error(`Cannot use label "${immediate}" for branch/jump outside .text section`);
-                        }
-                        // Lấy địa chỉ của lệnh hiện tại từ instructionLines
-                        const currentInstructionInfo = this.instructionLines.find(item => item.line === instruction);
-                        const currentInstructionAddress = currentInstructionInfo ? currentInstructionInfo.address : this.currentAddress; // Fallback
-                        immValue = labelAddress - currentInstructionAddress;
-                    } else {
-                        immValue = labelAddress; // Sử dụng địa chỉ tuyệt đối cho các lệnh khác
+    // Lượt 1: Xây dựng bảng nhãn, tính địa chỉ và kích thước lệnh
+    _pass1(assemblyCode) {
+        const lines = assemblyCode.split('\n');
+        this.currentAddress = this.textBaseAddress;
+        this.inDataSegment = false;
+
+        for (let i = 0; i < lines.length; i++) {
+            const originalLine = lines[i];
+            const lineNumber = i + 1;
+            let line = originalLine.trim();
+
+            const commentIndex = line.indexOf('#');
+            if (commentIndex !== -1) line = line.substring(0, commentIndex).trim();
+            if (line.length === 0) {
+                this.instructionLines.push({ original: originalLine, type: 'empty', lineNumber });
+                continue;
+            }
+
+            let label = null;
+            const labelMatch = line.match(/^([a-zA-Z_][\w]*)\s*:/);
+            if (labelMatch) {
+                label = labelMatch[1];
+                line = line.substring(labelMatch[0].length).trim();
+                if (!/^[a-zA-Z_][\w]*$/.test(label)) throw new Error(`Line ${lineNumber}: Invalid label name "${label}"`);
+                if (this.labels[label] && this.labels[label].address !== undefined) {
+                     if (!(this.labels[label].isGlobal && this.labels[label].address === undefined)) {
+                         throw new Error(`Line ${lineNumber}: Duplicate label "${label}"`);
+                     }
+                }
+                this.labels[label] = { ...this.labels[label], address: this.currentAddress, type: this.inDataSegment ? 'data' : 'instruction' };
+            }
+
+            if (line.length === 0) {
+                if (label) this.instructionLines.push({ original: originalLine, type: 'label-only', label: label, address: this.currentAddress, lineNumber });
+                else this.instructionLines.push({ original: originalLine, type: 'empty', lineNumber });
+                continue;
+            }
+            
+            const parts = line.split(/[\s,]+/);
+            const mnemonic = parts[0].trim().toLowerCase();
+            const operandsString = line.substring(mnemonic.length).trim();
+            const operands = this._parseOperandsSmart(operandsString);
+            const lineInfo = { original: originalLine, mnemonic, operands, label, address: this.currentAddress, type: '', lineNumber, size: 0 };
+
+            if (mnemonic.startsWith('.')) { // Xử lý chỉ thị
+                lineInfo.type = 'directive';
+                const handler = this.directives[mnemonic];
+                if (handler) {
+                    try {
+                        const addrBefore = this.currentAddress;
+                        handler.call(this, operands); // Gọi hàm xử lý chỉ thị
+                        lineInfo.size = this.currentAddress - addrBefore;
+                    } catch (e) {
+                        throw new Error(`Pass 1 (Line ${lineNumber} - "${originalLine.trim()}"): Directive "${mnemonic}": ${e.message}`);
                     }
                 } else {
-                    throw new Error(`Undefined label or symbol: "${immediate}" in instruction "${instruction}"`);
+                    throw new Error(`Line ${lineNumber}: Unknown directive "${mnemonic}"`);
                 }
-            } 
-            else {
-                // Handle hexadecimal and decimal values
-                if (typeof immediate === 'string' && immediate.trim().toLowerCase().startsWith('0x')) {
-                    immValue = parseInt(immediate, 16); // Convert hex to decimal
+            } else if (this.opcodes[mnemonic]) { // Xử lý lệnh
+                if (this.inDataSegment && mnemonic !== ".eqv") throw new Error(`Line ${lineNumber}: Instruction "${mnemonic}" in .data section is not allowed.`);
+                const instrOpcodeInfo = this.opcodes[mnemonic];
+                lineInfo.type = instrOpcodeInfo.type === 'Pseudo' ? 'pseudo-instruction' : 'instruction';
+
+                let instrSize = 4; // Mặc định các lệnh RV32 là 4 byte
+                if (lineInfo.type === 'pseudo-instruction') {
+                    instrSize = this._estimatePseudoInstructionSize(mnemonic, operands, lineNumber, true);
+                }
+                lineInfo.size = instrSize;
+                this.currentAddress += instrSize;
+            } else {
+                throw new Error(`Line ${lineNumber}: Unknown mnemonic "${mnemonic}"`);
+            }
+            this.instructionLines.push(lineInfo);
+        }
+    },
+
+    // Lượt 2: Mã hóa lệnh thành mã máy
+    _pass2() {
+        this.binaryCode = [];
+        for (const lineInfo of this.instructionLines) {
+            if (lineInfo.type !== 'instruction' && lineInfo.type !== 'pseudo-instruction') continue;
+            
+            this.currentAddress = lineInfo.address;
+            try {
+                const instrMnemonic = lineInfo.mnemonic.toLowerCase();
+                const instrOpcodeInfo = this.opcodes[instrMnemonic];
+                if (!instrOpcodeInfo) throw new Error(`Internal: Mnemonic "${instrMnemonic}" info missing in Pass 2.`);
+
+                const currentInstrInfo = { ...instrOpcodeInfo, mnemonic: instrMnemonic };
+                let generatedBinaries = [];
+                
+                if (currentInstrInfo.type === 'Pseudo') {
+                    generatedBinaries = this._expandAndEncodePseudo(lineInfo, currentInstrInfo);
                 } else {
-                    immValue = parseInt(immediate, 10); // Convert decimal string to number
+                    const binStr = this._encodeInstruction(currentInstrInfo, lineInfo.operands, lineInfo.address);
+                    if (binStr) generatedBinaries.push(binStr);
                 }
-            }
 
-            let maxBits;
-            switch (format) {
-                case "I": maxBits = 12; break;
-                case "S": maxBits = 12; break;
-                case "B": maxBits = 13; break; // 12 bits + 1 bit sign
-                case "U": maxBits = 20; break;
-                case "J": maxBits = 21; break;  // 20 bits + 1 bit sign
-                default: throw new Error(`Unsupported format for immediate encoding: ${format}`);
-            }
+                lineInfo.binary = generatedBinaries;
+                generatedBinaries.forEach((bin, idx) => {
+                    const hex = '0x' + this._binToHex(bin, 8);
+                    const instrAddress = lineInfo.address + (idx * 4);
+                    this.binaryCode.push({ address: instrAddress, binary: bin, hex: hex });
+                    this._writeBinaryToMemory(instrAddress, bin);
+                });
 
-            const limit = Math.pow(2, maxBits - 1);
-            if (immValue < -limit || immValue >= limit) {
-                throw new Error(`Immediate value ${immValue} out of range for ${format}-type instruction "${instruction}"`);
+            } catch (e) {
+                throw new Error(`Pass 2 (Line ${lineInfo.lineNumber} - "${lineInfo.original.trim()}"): ${e.message}`);
             }
+        }
+    },
 
-            if (immValue < 0) {
-                immValue = (1 << maxBits) + immValue; // Two's complement
+    // Đặt lại trạng thái của assembler
+    _reset() {
+        this.memory = {}; this.labels = {}; this.equValues = {};
+        this.currentSection = null; this.currentAddress = 0;
+        this.instructionLines = []; this.binaryCode = [];
+        this.inDataSegment = false;
+    },
+
+    // Phân tích chuỗi toán hạng thông minh
+    _parseOperandsSmart(operandsPart) {
+        if (!operandsPart) return [];
+        const operands = []; let currentOperand = ''; let inString = false; let parenLevel = 0;
+        for (let i = 0; i < operandsPart.length; i++) {
+            const char = operandsPart[i];
+            if (char === '"' && (i === 0 || operandsPart[i - 1] !== '\\')) inString = !inString;
+            if (char === '(' && !inString) parenLevel++; 
+            if (char === ')' && !inString) parenLevel--;
+            if (char === ',' && !inString && parenLevel === 0) {
+                if (currentOperand.trim().length > 0) operands.push(currentOperand.trim());
+                currentOperand = '';
+            } else {
+                currentOperand += char;
             }
-            return immValue.toString(2).padStart(maxBits, '0');
+        }
+        if (currentOperand.trim().length > 0) operands.push(currentOperand.trim());
+        return operands.filter(op => op.length > 0);
+    },
+
+    // Chuyển đổi số thập phân sang chuỗi nhị phân bù 2
+    _decToBin(decimal, length) {
+        let binary = (decimal >= 0) ? decimal.toString(2) : (Math.pow(2, length) + decimal).toString(2);
+        if (binary.length > length) binary = binary.slice(-length);
+        return binary.padStart(length, '0');
+    },
+
+    // Chuyển đổi chuỗi nhị phân sang hex
+    _binToHex(binary, nibbles) {
+        let hex = '';
+        for (let i = 0; i < binary.length; i += 4) {
+            hex += parseInt(binary.substring(i, i + 4), 2).toString(16);
+        }
+        return hex.toUpperCase().padStart(nibbles, '0');
+    },
+
+    // Phân tích giá trị immediate (số, nhãn, hằng)
+    _parseImmediate(operand, bits, isRelative = false, isPass1 = false, instructionAddress = 0) {
+        operand = operand.trim();
+        let value = null;
+        
+        if (this.equValues[operand] !== undefined) { value = this.equValues[operand]; }
+        else if (operand.match(/^[+-]?0x[0-9a-fA-F]+$/i)) { value = parseInt(operand, 16); }
+        else if (operand.match(/^[+-]?\d+$/)) { value = parseInt(operand, 10); }
+
+        if (value === null && /^[a-zA-Z_][\w]*$/.test(operand)) {
+            if (this.labels[operand] && this.labels[operand].address !== undefined) {
+                const labelAddress = this.labels[operand].address;
+                value = isRelative ? labelAddress - instructionAddress : labelAddress;
+            } else if (isPass1) { return null; } 
+              else { throw new Error(`Undefined label "${operand}"`); }
+        }
+        if (value === null || isNaN(value)) throw new Error(`Invalid immediate value or undefined symbol: "${operand}"`);
+        
+        return value;
+    },
+
+    // Lấy chỉ số (0-31) của thanh ghi
+    getRegisterIndex(regNameWithXF) {
+        const regName = regNameWithXF.trim().toUpperCase();
+        const mappedName = this.registerMapping[regName] || regName;
+        const match = mappedName.match(/^[XF](\d+)$/);
+        if (match) {
+            const index = parseInt(match[1]);
+            if (index >= 0 && index < 32) return index;
+        }
+        throw new Error(`Invalid register name: "${regNameWithXF}"`);
+    },
+
+    // Phân tích toán hạng dạng bộ nhớ `offset(baseRegister)`
+    _parseMemoryOperand(operand) {
+        const match = operand.match(/^(-?[0-9a-zA-Z_]+)?\s*\(\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\)$/);
+        if (!match) throw new Error(`Invalid memory operand format: "${operand}"`);
+
+        const offsetPart = match[1] || '0';
+        const basePart = match[2];
+
+        const offsetValue = this._parseImmediate(offsetPart, 12, false, false, this.currentAddress);
+        const baseRegIndex = this.getRegisterIndex(basePart);
+        if (offsetValue === null) throw new Error(`Unresolved offset symbol "${offsetPart}"`);
+
+        return { offset: offsetValue, baseRegIndex: baseRegIndex };
+    },
+
+    // Hàm mã hóa một lệnh thành chuỗi nhị phân 32-bit
+    _encodeInstruction(instrInfo, operands, instructionAddress) {
+        const { type, mnemonic } = instrInfo;
+        let rd, rs1, rs2, imm, rd_s, rs1_s, rs2_s, imm_s, binaryInstruction;
+        
+        const encodeReg = (regStr) => this._decToBin(this.getRegisterIndex(regStr), 5);
+        const encodeImm = (immStr, bits, isRelative) => {
+            const immValue = this._parseImmediate(immStr, bits, isRelative, false, instructionAddress);
+            return this._decToBin(immValue, bits);
         };
 
         try {
             switch (type) {
-                case "R":
-                    if (parts.length !== 4) throw new Error(`Incorrect arguments for R-type instruction "${instruction}"`);
-                    rd = parts[1];
-                    rs1 = parts[2];
-                    rs2 = parts[3];
-                    rdEncoded = encodeRegister(rd);
-                    rs1Encoded = encodeRegister(rs1);
-                    rs2Encoded = encodeRegister(rs2);
-                    binaryInstruction = funct7 + rs2Encoded + rs1Encoded + funct3 + rdEncoded + binOpcode;
+                case 'R':
+                    rd_s = encodeReg(operands[0]);
+                    rs1_s = encodeReg(operands[1]);
+                    rs2_s = encodeReg(operands[2]);
+                    binaryInstruction = instrInfo.funct7 + rs2_s + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
                     break;
-
-                case "I":
-                    if (parts.length !== 4) throw new Error(`Incorrect arguments for I-type instruction "${instruction}"`);
-                    rd = parts[1];
-                    rs1 = parts[2];
-                    imm = parts[3];
-                    rdEncoded = encodeRegister(rd);
-                    rs1Encoded = encodeRegister(rs1);
-                    immEncoded = encodeImmediate(imm, type);
-
-                    // Xử lý riêng cho SLLI, SRLI, SRAI
-                    if (opcode === 'SLLI' || opcode === 'SRLI' || opcode === 'SRAI') {
-                        const shamt = parseInt(imm) & 0x1F; // Lấy 5 bit thấp
-                        immEncoded = funct7.padStart(7, '0') + shamt.toString(2).padStart(5, '0'); // Ghép funct7 và shamt
-                        binaryInstruction = immEncoded + rs1Encoded + funct3 + rdEncoded + binOpcode;
-                    } else {
-                        binaryInstruction = immEncoded.padStart(12, '0') + rs1Encoded + funct3 + rdEncoded + binOpcode;
+                case 'I':
+                case 'I-shamt':
+                    rd_s = encodeReg(operands[0]);
+                    rs1_s = encodeReg(operands[1]);
+                    const immBits = (type === 'I-shamt') ? 5 : 12;
+                    imm_s = encodeImm(operands[2], immBits, false);
+                    const funct7_I = (type === 'I-shamt') ? instrInfo.funct7 : imm_s.substring(0, 7);
+                    binaryInstruction = funct7_I + (type === 'I-shamt' ? imm_s : imm_s.substring(7)) + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
+                    
+                    if (mnemonic === 'jalr' || mnemonic === 'lw' || mnemonic === 'lb' || mnemonic === 'lh' || mnemonic === 'lbu' || mnemonic === 'lhu') {
+                         rd_s = encodeReg(operands[0]);
+                         const memOp = this._parseMemoryOperand(operands[1]);
+                         rs1_s = this._decToBin(memOp.baseRegIndex, 5);
+                         imm_s = this._decToBin(memOp.offset, 12);
+                         binaryInstruction = imm_s + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
                     }
                     break;
-
-
-                case "S":
-                    if (parts.length !== 4) throw new Error(`Incorrect arguments for S-type instruction "${instruction}"`);
-                    rs2 = parts[1]; // Giá trị để lưu
-                    rs1 = parts[2]; // Thanh ghi địa chỉ cơ sở
-                    imm = parts[3]; // Offset
-                    rs1Encoded = encodeRegister(rs1);
-                    rs2Encoded = encodeRegister(rs2);
-                    immEncoded = encodeImmediate(imm, type);
-                    // imm[11:5] + rs2 + rs1 + funct3 + imm[4:0] + opcode
-                    binaryInstruction = immEncoded.slice(0, 7) + rs2Encoded + rs1Encoded + funct3 + immEncoded.slice(7) + binOpcode;
+                case 'S':
+                    rs2_s = encodeReg(operands[0]);
+                    const memOpS = this._parseMemoryOperand(operands[1]);
+                    rs1_s = this._decToBin(memOpS.baseRegIndex, 5);
+                    imm_s = this._decToBin(memOpS.offset, 12);
+                    binaryInstruction = imm_s.substring(0, 7) + rs2_s + rs1_s + instrInfo.funct3 + imm_s.substring(7) + instrInfo.opcode;
+                    break;
+                case 'B':
+                    rs1_s = encodeReg(operands[0]);
+                    rs2_s = encodeReg(operands[1]);
+                    imm_s = encodeImm(operands[2], 13, true);
+                    binaryInstruction = imm_s[0] + imm_s.slice(2, 8) + rs2_s + rs1_s + instrInfo.funct3 + imm_s.slice(8, 12) + imm_s[1] + instrInfo.opcode;
+                    break;
+                case 'U':
+                    rd_s = encodeReg(operands[0]);
+                    imm = this._parseImmediate(operands[1], 32, false, false, instructionAddress);
+                    imm_s = this._decToBin(imm, 32);
+                    binaryInstruction = imm_s.substring(0, 20) + rd_s + instrInfo.opcode;
+                    break;
+                case 'J':
+                    rd_s = encodeReg(operands[0]);
+                    imm_s = encodeImm(operands[1], 21, true);
+                    binaryInstruction = imm_s[0] + imm_s.slice(10, 20) + imm_s[9] + imm_s.slice(1, 9) + rd_s + instrInfo.opcode;
                     break;
 
-                case "B":
-                    if (parts.length !== 4) throw new Error(`Incorrect arguments for B-type instruction "${instruction}"`);
-                    rs1 = parts[1];
-                    rs2 = parts[2];
-                    imm = parts[3]; // Label hoặc offset
-                    rs1Encoded = encodeRegister(rs1);
-                    rs2Encoded = encodeRegister(rs2);
-                    immEncoded = encodeImmediate(imm, type);
-                    // imm[12] + imm[10:5] + rs2 + rs1 + funct3 + imm[4:1] + imm[11] + opcode
-                    binaryInstruction =
-                        immEncoded.slice(0, 1) +  // imm[12]
-                        immEncoded.slice(2, 8) +  // imm[10:5]
-                        rs2Encoded +
-                        rs1Encoded +
-                        funct3 +
-                        immEncoded.slice(8, 12) + // imm[4:1]
-                        immEncoded.slice(1, 2) +  // imm[11]
-                        binOpcode;
+                // --- Floating-Point Types ---
+                case 'R-FP':
+                    rd_s = encodeReg(operands[0]);
+                    rs1_s = encodeReg(operands[1]);
+                    rs2_s = encodeReg(operands[2]);
+                    const rm = instrInfo.funct3 || '000'; // Default rounding mode nếu không có
+                    binaryInstruction = instrInfo.funct7 + rs2_s + rs1_s + rm + rd_s + instrInfo.opcode;
                     break;
-
-                case "U":
-                    if (parts.length !== 3) throw new Error(`Incorrect arguments for U-type instruction "${instruction}"`);
-                    rd = parts[1];
-                    imm = parts[2];
-                    rdEncoded = encodeRegister(rd);
-                    immEncoded = encodeImmediate(imm, type);
-                    // imm[31:12] + rd + opcode
-                    binaryInstruction = immEncoded + rdEncoded + binOpcode; // imm đã là 20 bit cao
+                case 'R-FP-CVT':
+                    rd_s = encodeReg(operands[0]);
+                    rs1_s = encodeReg(operands[1]);
+                    rs2_s = instrInfo.rs2_subfield;
+                    binaryInstruction = instrInfo.funct7 + rs2_s + rs1_s + (instrInfo.funct3 || '000') + rd_s + instrInfo.opcode;
                     break;
-
-                case "J":
-                    if (parts.length !== 3) throw new Error(`Incorrect arguments for J-type instruction "${instruction}"`);
-                    rd = parts[1];
-                    imm = parts[2]; // Label hoặc offset
-                    rdEncoded = encodeRegister(rd);
-                    immEncoded = encodeImmediate(imm, type);
-                    // imm[20] + imm[10:1] + imm[11] + imm[19:12] + rd + opcode
-                    binaryInstruction =
-                        immEncoded.slice(0, 1) +  // imm[20]
-                        immEncoded.slice(11, 21) + // imm[10:1]
-                        immEncoded.slice(10, 11) + // imm[11]
-                        immEncoded.slice(1, 9) +  // imm[19:12] --- Sửa logic này
-                        rdEncoded +
-                        binOpcode;
+                case 'R-FP-CMP':
+                    rd_s = encodeReg(operands[0]);
+                    rs1_s = encodeReg(operands[1]);
+                    rs2_s = encodeReg(operands[2]);
+                    binaryInstruction = instrInfo.funct7 + rs2_s + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
+                    break;
+                case 'I-FP': // FLW
+                    rd_s = encodeReg(operands[0]);
+                    const memOpIFP = this._parseMemoryOperand(operands[1]);
+                    rs1_s = this._decToBin(memOpIFP.baseRegIndex, 5);
+                    imm_s = this._decToBin(memOpIFP.offset, 12);
+                    binaryInstruction = imm_s + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
+                    break;
+                case 'S-FP': // FSW
+                    rs2_s = encodeReg(operands[0]);
+                    const memOpSFP = this._parseMemoryOperand(operands[1]);
+                    rs1_s = this._decToBin(memOpSFP.baseRegIndex, 5);
+                    imm_s = this._decToBin(memOpSFP.offset, 12);
+                    binaryInstruction = imm_s.substring(0, 7) + rs2_s + rs1_s + instrInfo.funct3 + imm_s.substring(7) + instrInfo.opcode;
                     break;
 
                 default:
-                    throw new Error(`Unsupported instruction type: "${type}" for instruction "${instruction}"`);
+                    throw new Error(`Unsupported instruction type "${type}" for mnemonic "${mnemonic}"`);
             }
-        } catch (error) {
-            console.error(`Error encoding instruction "${instruction}":`, error);
-            // Trả về thông báo lỗi thay vì ném lên trên nếu muốn xử lý mềm dẻo hơn
-            return `Error: ${error.message}`;
+        } catch (e) {
+            throw new Error(`Encoding [${mnemonic} ${operands.join(', ')}]: ${e.message}`);
         }
 
         if (binaryInstruction.length !== 32) {
-            console.error(`Generated binary instruction length is not 32 bits for "${instruction}": L=${binaryInstruction.length}`);
-            // Có thể ném lỗi ở đây
+            throw new Error(`Internal Error: Encoded binary for "${mnemonic}" is ${binaryInstruction.length} bits, expected 32.`);
         }
-
-        //        console.log("binary before return:", binaryInstruction)
-        return binaryInstruction.replace(/ /g, ''); // Xóa khoảng trắng và trả về
+        return binaryInstruction;
     },
 
-    /**
-    * Chuẩn hóa tên thanh ghi trong một lệnh.
-    * @param {string} instruction - Dòng lệnh hợp ngữ.
-    * @returns {string} - Dòng lệnh với tên thanh ghi đã được chuẩn hóa sang dạng Xn.
-    * @private
-    */
-    _normalizeRegisterNames(instruction) {
-        let normalized = instruction;
-        // Thay thế các alias bằng tên Xn chuẩn, ưu tiên các alias dài hơn trước
-        const aliases = Object.keys(this.registerMapping).sort((a, b) => b.length - a.length);
-        for (const alias of aliases) {
-            const riscvName = this.registerMapping[alias];
-            // Biểu thức chính quy để tìm alias (xuất hiện như một từ riêng biệt)
-            const regex = new RegExp(`\\b${alias.replace('$', '\\$')}\\b`, 'gi');
-            normalized = normalized.replace(regex, riscvName); // Thay thế bằng Xn
+    // Ước lượng kích thước của lệnh giả
+    _estimatePseudoInstructionSize(mnemonic, operands, lineNumber, isPass1 = false) {
+        if (mnemonic === 'li') {
+            try {
+                const immValue = this._parseImmediate(operands[1], 32, false, isPass1);
+                if (immValue === null && isPass1) return 8; // Giả định trường hợp tệ nhất
+                return (immValue >= -2048 && immValue <= 2047) ? 4 : 8;
+            } catch (e) { if (isPass1) return 8; throw e; }
         }
-        return normalized;
+        if (mnemonic === 'la' || mnemonic === 'call') return 8;
+        return 4; // Mặc định các lệnh giả khác chiếm 4 byte
     },
 
+    // Mở rộng lệnh giả thành lệnh thật
+    _expandAndEncodePseudo(lineInfo, instrInfo) {
+        const { mnemonic, operands, address } = lineInfo;
+        let expandedInstructions = [];
 
-    // --- Các hàm xử lý chỉ thị (Private methods) ---
-    _handleDataDirective(args) {
-        this.currentSection = "data";
-        if (args.length === 1) {
-            const addr = parseInt(args[0]);
-            if (isNaN(addr)) throw new Error(`Invalid address for .data: ${args[0]}`);
-            this.currentAddress = addr;
-        }
-    },
-    _handleTextDirective(args) {
-        this.currentSection = "text";
-        if (args.length === 1) {
-            const addr = parseInt(args[0]);
-            if (isNaN(addr)) throw new Error(`Invalid address for .text: ${args[0]}`);
-            this.currentAddress = addr;
-        } else {
-            // Địa chỉ mặc định cho .text nếu không được chỉ định
-            this.currentAddress = 0x00400000; // Ví dụ
-        }
-    },
-    _handleWordDirective(args) {
-        if (this.currentSection !== "data") {
-            throw new Error(".word directive can only be used in .data section");
-        }
-        for (const arg of args) {
-            let value = this._resolveSymbolOrValue(arg);
-            this._storeValue(value, 4); // Lưu 4 byte
-        }
-    },
-    _handleHalfDirective(args) {
-        if (this.currentSection !== "data") {
-            throw new Error(".half directive can only be used in .data section");
-        }
-        for (const arg of args) {
-            let value = this._resolveSymbolOrValue(arg);
-            this._storeValue(value, 2); // Lưu 2 byte
-        }
-    },
-    _handleByteDirective(args) {
-        if (this.currentSection !== "data") {
-            throw new Error(".byte directive can only be used in .data section");
-        }
-        for (const arg of args) {
-            let value = this._resolveSymbolOrValue(arg);
-            if (value < -128 || value > 255) {
-                throw new Error(`Byte value out of range: ${arg}`);
-            }
-            this._storeValue(value, 1); // Lưu 1 byte
-        }
-    },
-    _handleAsciiDirective(args) {
-        if (this.currentSection !== "data") {
-            throw new Error(".ascii directive can only be used in .data section");
-        }
-        const str = this._parseStringLiteral(args[0], '.ascii');
-        for (let i = 0; i < str.length; i++) {
-            this.memory[this.currentAddress++] = str.charCodeAt(i);
-        }
-    },
-    _handleAsciizDirective(args) {
-        if (this.currentSection !== "data") {
-            throw new Error(".asciiz directive can only be used in .data section");
-        }
-        const str = this._parseStringLiteral(args[0], '.asciiz');
-        for (let i = 0; i < str.length; i++) {
-            this.memory[this.currentAddress++] = str.charCodeAt(i);
-        }
-        this.memory[this.currentAddress++] = 0; // Thêm null terminator
-    },
-    _handleSpaceDirective(args) {
-        if (this.currentSection !== "data") {
-            throw new Error(".space directive can only be used in .data section");
-        }
-        const bytes = parseInt(args[0]);
-        if (isNaN(bytes) || bytes < 0) { // Kiểm tra bytes âm
-            throw new Error(`Invalid number of bytes in .space: ${args[0]}`);
-        }
-        // Thay vì tăng trực tiếp, hãy ghi byte 0 vào các vị trí bộ nhớ
-        for (let i = 0; i < bytes; i++) {
-            this.memory[this.currentAddress++] = 0;
-        }
-        // this.currentAddress += bytes; // Chỉ tăng địa chỉ mà không ghi gì
-    },
-    _handleAlignDirective(args) {
-        if (this.currentSection !== "data" && this.currentSection !== "text") { // .align có thể dùng trong .text
-            throw new Error(".align directive needs to be in .data or .text section");
-        }
-        const n = parseInt(args[0]);
-        if (isNaN(n) || n < 0) {
-            throw new Error(`Invalid alignment value: ${args[0]}`);
-        }
-        const align = 1 << n; // Tương đương 2**n
-        const remainder = this.currentAddress % align;
-        if (remainder !== 0) {
-            const padding = align - remainder;
-            for (let i = 0; i < padding; i++) {
-                // Ghi byte 0 để căn chỉnh, quan trọng cho section .data
-                if (this.currentSection === 'data') {
-                    this.memory[this.currentAddress++] = 0; // Ghi byte 0 vào bộ nhớ data
+        switch (mnemonic) {
+            case 'li':
+                const rdLi = operands[0];
+                const immValueLi = this._parseImmediate(operands[1], 32, false, false, address);
+                if (immValueLi >= -2048 && immValueLi <= 2047) {
+                    expandedInstructions.push({ mnemonic: 'addi', operands: [rdLi, 'x0', immValueLi.toString()], address: address });
                 } else {
-                    this.currentAddress++; // Chỉ tăng địa chỉ trong section text
+                    let imm_hi = immValueLi >>> 12;
+                    const imm_lo = immValueLi & 0xFFF;
+                    if (imm_lo & 0x800) imm_hi = (imm_hi + 1) & 0xFFFFF; // Điều chỉnh làm tròn
+                    const imm_lo_signed = (imm_lo >= 0x800) ? (imm_lo - 0x1000) : imm_lo;
+                    
+                    expandedInstructions.push({ mnemonic: 'lui', operands: [rdLi, imm_hi.toString()], address: address });
+                    if (imm_lo_signed !== 0 || immValueLi === 0) {
+                        expandedInstructions.push({ mnemonic: 'addi', operands: [rdLi, rdLi, imm_lo_signed.toString()], address: address + 4 });
+                    }
                 }
+                break;
+            case 'la':
+                if (operands.length !== 2) throw new Error(`'la' expects rd, symbol. Got ${operands}`);
+                const rdLa = operands[0];
+                const symbolLa = operands[1];
+                
+                // Lấy địa chỉ của nhãn đích
+                const symbolAddress = this._parseImmediate(symbolLa, 32, false, false, address);
+                if (symbolAddress === null) throw new Error(`Unresolved symbol "${symbolLa}" in 'la'.`);
+                
+                // Tính toán offset tương đối so với PC hiện tại
+                const offset = symbolAddress - address;
+
+                // Sử dụng kỹ thuật làm tròn để tính toán 2 phần của offset
+                // Thêm 0x800 (nửa của 12 bit) để làm tròn lên khi bit thứ 11 của offset là 1
+                const hi20 = (offset + 0x800) & 0xFFFFF000;
+                const lo12 = symbolAddress - (address + hi20); // Phần còn lại chính là lo12
+
+                // Chuyển hi20 thành immediate cho AUIPC (dịch phải 12 bit)
+                const auipc_imm = hi20 >> 12;
+
+                expandedInstructions.push({
+                    mnemonic: 'auipc',
+                    operands: [rdLa, auipc_imm.toString()],
+                    address: address
+                });
+                
+                // Chỉ thêm ADDI nếu phần offset thấp khác 0
+                if (lo12 !== 0 || hi20 === 0) {
+                     expandedInstructions.push({
+                        mnemonic: 'addi',
+                        operands: [rdLa, rdLa, lo12.toString()],
+                        address: address + 4
+                    });
+                }
+                break;
+            case 'call':
+                const targetAddressCall = this._parseImmediate(operands[0], 32, false, false, address);
+                const offsetCall = targetAddressCall - address;
+                let hi_call = offsetCall >>> 12;
+                let lo_call = offsetCall & 0xFFF;
+                if (lo_call & 0x800) hi_call++;
+                const lo_call_signed = (lo_call & 0x800) ? (lo_call - 4096) : lo_call;
+                expandedInstructions.push({ mnemonic: 'auipc', operands: ['ra', hi_call.toString()], address: address });
+                expandedInstructions.push({ mnemonic: 'jalr', operands: ['ra', 'ra', lo_call_signed.toString()], address: address + 4 });
+                break;
+            // Các lệnh giả đơn giản
+            case 'nop': expandedInstructions.push({ mnemonic: 'addi', operands: ['x0', 'x0', '0'], address }); break;
+            case 'mv': expandedInstructions.push({ mnemonic: 'addi', operands: [operands[0], operands[1], '0'], address }); break;
+            case 'j': expandedInstructions.push({ mnemonic: 'jal', operands: ['x0', operands[0]], address }); break;
+            case 'jr': expandedInstructions.push({ mnemonic: 'jalr', operands: ['x0', operands[0], '0'], address }); break;
+            case 'ret': expandedInstructions.push({ mnemonic: 'jalr', operands: ['x0', 'ra', '0'], address }); break;
+            case 'bnez': expandedInstructions.push({ mnemonic: 'bne', operands: [operands[0], 'x0', operands[1]], address }); break;
+            case 'beqz': expandedInstructions.push({ mnemonic: 'beq', operands: [operands[0], 'x0', operands[1]], address }); break;
+            case 'fmv.s': expandedInstructions.push({ mnemonic: 'fsgnj.s', operands: [operands[0], operands[1], operands[1]], address }); break;
+            case 'fabs.s': expandedInstructions.push({ mnemonic: 'fsgnjx.s', operands: [operands[0], operands[1], operands[1]], address }); break;
+            case 'fneg.s': expandedInstructions.push({ mnemonic: 'fsgnjn.s', operands: [operands[0], operands[1], operands[1]], address }); break;
+            default: throw new Error(`Expansion for pseudo instruction "${mnemonic}" not implemented.`);
+        }
+
+        return expandedInstructions.map(exp => {
+            const realInstrInfo = { ...this.opcodes[exp.mnemonic], mnemonic: exp.mnemonic };
+            return this._encodeInstruction(realInstrInfo, exp.operands, exp.address);
+        });
+    },
+
+    // Ghi chuỗi nhị phân vào bộ nhớ (little-endian)
+    _writeBinaryToMemory(address, binaryString) {
+        for (let i = 0; i < 4; i++) {
+            this.memory[address + i] = parseInt(binaryString.substring(32 - (i + 1) * 8, 32 - i * 8), 2);
+        }
+    },
+
+    // --- Các hàm xử lý chỉ thị (Directive Handlers) ---
+    _handleTextDirective(operands) {
+        this.inDataSegment = false;
+        this.currentSection = "text";
+        if (operands.length === 1) this.currentAddress = this._parseNumericArg(operands[0], '.text address');
+    },
+    _handleDataDirective(operands) {
+        this.inDataSegment = true;
+        this.currentSection = "data";
+        this.currentAddress = (operands.length === 1) ? this._parseNumericArg(operands[0], '.data address') : this.dataBaseAddress;
+    },
+    _ensureDataSection(directiveName) {
+        if (this.currentSection !== "data") this._handleDataDirective([]);
+    },
+    _alignAddress(alignmentBytes, context) {
+        const remainder = this.currentAddress % alignmentBytes;
+        if (remainder !== 0) this.currentAddress += alignmentBytes - remainder;
+    },
+    _handleAlignDirective(operands) {
+        if (!this.currentSection) throw new Error(".align must be within a section");
+        const exponent = this._parseNumericArg(operands[0], '.align exponent');
+        this._alignAddress(1 << exponent, ".align");
+    },
+    _handleWordDirective(operands) {
+        this._ensureDataSection(".word");
+        this._alignAddress(4, ".word");
+        operands.forEach(arg => this._storeValue(this._resolveSymbolOrValue(arg), 4));
+    },
+    _handleHalfDirective(operands) {
+        this._ensureDataSection(".half");
+        this._alignAddress(2, ".half");
+        operands.forEach(arg => this._storeValue(this._resolveSymbolOrValue(arg), 2));
+    },
+    _handleByteDirective(operands) {
+        this._ensureDataSection(".byte");
+        operands.forEach(arg => {
+            if (arg.startsWith("'") && arg.endsWith("'") && arg.length === 3) {
+                this._storeValue(arg.charCodeAt(1), 1);
+            } else {
+                this._storeValue(this._resolveSymbolOrValue(arg), 1);
             }
-        }
+        });
     },
-    _handleGlobalDirective(args) {
-        const label = args[0];
-        if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(label)) { // Kiểm tra tên hợp lệ
-            throw new Error(`Invalid label name for .global: "${label}"`);
-        }
-        if (this.labels[label] !== undefined) {
-            this.labels[label].isGlobal = true;
-        } else {
-            this.labels[label] = { address: undefined, isGlobal: true }; // Dùng undefined thay null để rõ ràng hơn
-        }
+    _handleStringDirective(operands, nullTerminated) {
+        this._ensureDataSection(nullTerminated ? ".asciiz" : ".ascii");
+        const str = this._parseStringLiteral(operands.join(","), nullTerminated ? ".asciiz" : ".ascii");
+        for (let i = 0; i < str.length; i++) this.memory[this.currentAddress++] = str.charCodeAt(i) & 0xFF;
+        if (nullTerminated) this.memory[this.currentAddress++] = 0;
     },
-    _handleExternDirective(args) {
-        // .extern chỉ để thông báo, không thực sự làm gì trong assembler đơn giản này
-        console.warn(".extern directive is noted but not fully handled:", args);
-        const label = args[0];
-        if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(label)) {
-            throw new Error(`Invalid label name for .extern: "${label}"`);
-        }
-        // Có thể thêm vào danh sách externals nếu cần
+    _handleSpaceDirective(operands) {
+        this._ensureDataSection(".space");
+        const bytes = this._parseNumericArg(operands[0], '.space size');
+        for (let i = 0; i < bytes; i++) this.memory[this.currentAddress++] = 0;
     },
-    _handleEquDirective(args) {
-        const label = args[0];
-        const valueStr = args[1];
-        if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(label)) {
-            throw new Error(`Invalid label name for .equ: "${label}"`);
-        }
-        if (this.labels[label] !== undefined || this.equValues[label] !== undefined) {
-            throw new Error(`Symbol "${label}" already defined`);
-        }
-
-        // Cố gắng phân giải giá trị (có thể là số hoặc một .equ khác)
-        let value = this._resolveSymbolOrValue(valueStr); // Hàm này cần xử lý cả .equ
-
-        this.equValues[label] = value; // Lưu vào bảng riêng cho .equ
-        // Không lưu vào this.labels nữa để tránh nhầm lẫn địa chỉ
-        // this.labels[label] = value;
+    _handleFloatDirective(operands) {
+        this._ensureDataSection(".float");
+        this._alignAddress(4, ".float");
+        const buffer = new ArrayBuffer(4);
+        const view = new DataView(buffer);
+        operands.forEach(arg => {
+            const floatValue = parseFloat(arg);
+            if (isNaN(floatValue)) throw new Error(`Invalid floating-point value: "${arg}"`);
+            view.setFloat32(0, floatValue, true); // true for little-endian
+            for (let i = 0; i < 4; i++) this.memory[this.currentAddress++] = view.getUint8(i);
+        });
+    },
+    _handleGlobalDirective(operands) {
+        const label = operands[0];
+        if (!this.labels[label]) this.labels[label] = { address: undefined };
+        this.labels[label].isGlobal = true;
+    },
+    _handleExternDirective(operands) {
+        operands.forEach(label => {
+            if (!this.labels[label]) this.labels[label] = { address: undefined };
+            this.labels[label].isExternal = true;
+        });
+    },
+    _handleEquDirective(operands) {
+        const label = operands[0];
+        if (this.equValues[label] !== undefined) throw new Error(`Symbol "${label}" already defined`);
+        this.equValues[label] = this._resolveSymbolOrValue(operands[1]);
+    },
+    _handleOrgDirective(operands) {
+        this.currentAddress = this._parseNumericArg(operands[0], '.org address');
     },
 
-
-    // --- Hàm trợ giúp ---
-    /**
-     * Phân giải một tham số có thể là số, nhãn hoặc hằng số .equ.
-     * @param {string} symbolOrValue - Tham số cần phân giải.
-     * @returns {number} - Giá trị số tương ứng.
-     * @private
-     */
+    // --- Các hàm phụ trợ cho chỉ thị ---
+    _parseNumericArg(arg, context) {
+        try { return this._resolveSymbolOrValue(arg); }
+        catch (e) { throw new Error(`Invalid numeric/symbolic value for ${context}: "${arg}"`); }
+    },
     _resolveSymbolOrValue(symbolOrValue) {
-        const value = parseInt(symbolOrValue);
-        if (!isNaN(value)) {
-            return value; // Là số
-        } else if (this.equValues[symbolOrValue] !== undefined) {
-            return this.equValues[symbolOrValue]; // Là hằng số .equ
-        } else if (this.labels[symbolOrValue] !== undefined && this.labels[symbolOrValue].address !== undefined) {
-            return this.labels[symbolOrValue].address; // Là nhãn đã có địa chỉ
-        } else {
-            // Có thể trả về một giá trị đặc biệt hoặc ném lỗi tùy thuộc vào ngữ cảnh cần xử lý nhãn chưa xác định địa chỉ
-            throw new Error(`Undefined symbol or label: "${symbolOrValue}"`);
-        }
+        const trimmed = symbolOrValue.trim();
+        if (/^'.*'$/.test(trimmed) && trimmed.length === 3) return trimmed.charCodeAt(1);
+        if (/^-?0x[0-9a-f]+$/i.test(trimmed)) return parseInt(trimmed, 16);
+        if (/^-?\d+$/.test(trimmed)) return parseInt(trimmed, 10);
+        if (this.equValues[trimmed] !== undefined) return this.equValues[trimmed];
+        if (this.labels[trimmed]?.address !== undefined) return this.labels[trimmed].address;
+        throw new Error(`Undefined symbol or invalid value: "${trimmed}"`);
     },
-
-    /**
-    * Lưu trữ giá trị vào bộ nhớ ảo (little-endian).
-    * @param {number} value - Giá trị cần lưu.
-    * @param {number} bytes - Số byte để lưu (1, 2, hoặc 4).
-    * @private
-    */
     _storeValue(value, bytes) {
         for (let i = 0; i < bytes; i++) {
-            const byte = (value >> (i * 8)) & 0xFF;
-            this.memory[this.currentAddress++] = byte;
+            this.memory[this.currentAddress + i] = (value >> (i * 8)) & 0xFF;
         }
+        this.currentAddress += bytes;
     },
-    /**
-     * Phân tích cú pháp chuỗi ký tự từ chỉ thị .ascii/.asciiz.
-     * @param {string} arg - Tham số chuỗi (ví dụ: "\"Hello\"").
-     * @param {string} directiveName - Tên chỉ thị (để báo lỗi).
-     * @returns {string} - Chuỗi đã được xử lý (loại bỏ dấu ngoặc kép).
-     * @private
-     */
     _parseStringLiteral(arg, directiveName) {
-        if (!arg.startsWith('"') || !arg.endsWith('"')) {
-            throw new Error(`Invalid string literal for ${directiveName}: ${arg}`);
+        const trimmedArg = arg.trim();
+        if (!trimmedArg.startsWith('"') || !trimmedArg.endsWith('"')) {
+            throw new Error(`Invalid string literal for ${directiveName}. Must be in double quotes.`);
         }
-        // Xử lý các ký tự escape cơ bản (thêm các ký tự khác nếu cần)
-        return arg.slice(1, -1)
-            .replace(/\\n/g, '\n')
-            .replace(/\\t/g, '\t')
-            .replace(/\\"/g, '"')
-            .replace(/\\\\/g, '\\');
+        // Xử lý các escape sequence
+        return trimmedArg.slice(1, -1)
+            .replace(/\\n/g, '\n').replace(/\\t/g, '\t')
+            .replace(/\\"/g, '"').replace(/\\'/g, "'")
+            .replace(/\\\\/g, '\\').replace(/\\0/g, '\0');
     },
-
 };
