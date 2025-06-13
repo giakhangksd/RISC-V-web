@@ -24,6 +24,7 @@ class TileLinkULMemory {
         const b3 = this.readByte(addr + 3);
         return (b3 << 24) | (b2 << 16) | (b1 << 8) | b0;
     }
+    
     writeWord(address, value) {
         const addr = address | 0;
         this.writeByte(addr, value & 0xFF);

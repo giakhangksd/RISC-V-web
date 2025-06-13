@@ -153,7 +153,6 @@ function renderDataSegmentTable() {
         }
     }
 }
-
 // Cập nhật toàn bộ giao diện người dùng với trạng thái hiện tại của simulator
 function updateUIGlobally() {
     const currentSimulator = simulator; // Tham chiếu đến đối tượng simulator

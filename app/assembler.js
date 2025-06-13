@@ -411,23 +411,39 @@ export const assembler = {
                     rs2_s = encodeReg(operands[2]);
                     binaryInstruction = instrInfo.funct7 + rs2_s + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
                     break;
+                // case 'I':
+                // case 'I-shamt':
+                //     rd_s = encodeReg(operands[0]);
+                //     rs1_s = encodeReg(operands[1]);
+                //     const immBits = (type === 'I-shamt') ? 5 : 12;
+                //     imm_s = encodeImm(operands[2], immBits, false);
+                //     const funct7_I = (type === 'I-shamt') ? instrInfo.funct7 : imm_s.substring(0, 7);
+                //     binaryInstruction = funct7_I + (type === 'I-shamt' ? imm_s : imm_s.substring(7)) + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
+                    
+                //     if (mnemonic === 'jalr' || mnemonic === 'lw' || mnemonic === 'lb' || mnemonic === 'lh' || mnemonic === 'lbu' || mnemonic === 'lhu') {
+                //          rd_s = encodeReg(operands[0]);
+                //          const memOp = this._parseMemoryOperand(operands[1]);
+                //          rs1_s = this._decToBin(memOp.baseRegIndex, 5);
+                //          imm_s = this._decToBin(memOp.offset, 12);
+                //          binaryInstruction = imm_s + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
+                //     }
+                //     break;
                 case 'I':
                 case 'I-shamt':
                     rd_s = encodeReg(operands[0]);
-                    rs1_s = encodeReg(operands[1]);
-                    const immBits = (type === 'I-shamt') ? 5 : 12;
-                    imm_s = encodeImm(operands[2], immBits, false);
-                    const funct7_I = (type === 'I-shamt') ? instrInfo.funct7 : imm_s.substring(0, 7);
-                    binaryInstruction = funct7_I + (type === 'I-shamt' ? imm_s : imm_s.substring(7)) + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
-                    
                     if (mnemonic === 'jalr' || mnemonic === 'lw' || mnemonic === 'lb' || mnemonic === 'lh' || mnemonic === 'lbu' || mnemonic === 'lhu') {
-                         rd_s = encodeReg(operands[0]);
-                         const memOp = this._parseMemoryOperand(operands[1]);
-                         rs1_s = this._decToBin(memOp.baseRegIndex, 5);
-                         imm_s = this._decToBin(memOp.offset, 12);
-                         binaryInstruction = imm_s + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
+                        const memOp = this._parseMemoryOperand(operands[1]);
+                        rs1_s = this._decToBin(memOp.baseRegIndex, 5);
+                        imm_s = this._decToBin(memOp.offset, 12);
+                        binaryInstruction = imm_s + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
+                    } else {
+                        rs1_s = encodeReg(operands[1]);
+                        const immBits = (type === 'I-shamt') ? 5 : 12;
+                        imm_s = encodeImm(operands[2], immBits, false);
+                        const funct7_I = (type === 'I-shamt') ? instrInfo.funct7 : imm_s.substring(0, 7);
+                        binaryInstruction = funct7_I + (type === 'I-shamt' ? imm_s : imm_s.substring(7)) + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
                     }
-                    break;
+                break;
                 case 'S':
                     rs2_s = encodeReg(operands[0]);
                     const memOpS = this._parseMemoryOperand(operands[1]);
