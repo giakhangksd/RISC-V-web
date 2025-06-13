@@ -120,10 +120,10 @@ function renderDataSegmentTable() {
                 //const byte = simulator.tilelinkMem.readByte[byteAddr] ?? null; // Lấy byte từ memory, nếu không có thì là null
                 let byte;
                 try {
-                    byte = simulator.tilelinkMem.readByte(byteAddr);
+                    byte = simulator.tilelinkMem.mem[byteAddr] ?? null;
                 } catch {
-                    byte = null;
-                }      
+                    byte = null;    
+                }
                 bytes.push(byte);
                 if (byte !== null) {
                     allBytesNull = false;

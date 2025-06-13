@@ -3,42 +3,140 @@
 // --- TileLink-UL Memory Model ---
 class TileLinkULMemory {
     constructor() {
-        this.mem = {}; // Bộ nhớ chính, truy cập theo địa chỉ byte
+        this.mem = {};
+        this.requestQueue = [];
+        this.currentRequest = null;
+        this.cycle = 0;
     }
 
-    readByte(address) {
-        const b = this.mem[address | 0];
-        if (b === undefined) throw new Error(`TileLinkUL: Read byte error at 0x${address.toString(16)}`);
-        return b;
+    // Gửi yêu cầu đọc (Promise hoàn thành sau nhiều cycle)
+    readWordAsync(address) {
+        return new Promise((resolve, reject) => {
+            this.requestQueue.push({
+                type: 'read',
+                address: address | 0,
+                resolve, reject,
+                state: 0, // 0: chờ gửi, 1: gửi lên bus, 2: bus->mem, 3: mem đọc, 4: mem trả về bus, 5: bus trả về cpu
+                cycles: 0
+            });
+        });
     }
 
-    writeByte(address, value) {
-        this.mem[address | 0] = value & 0xFF;
+    // Gửi yêu cầu ghi (Promise hoàn thành sau nhiều cycle)
+    writeWordAsync(address, value) {
+        return new Promise((resolve, reject) => {
+            this.requestQueue.push({
+                type: 'write',
+                address: address | 0,
+                value,
+                resolve, reject,
+                state: 0,
+                cycles: 0
+            });
+        });
     }
 
-    readWord(address) {
-        const addr = address | 0;
-        const b0 = this.readByte(addr);
-        const b1 = this.readByte(addr + 1);
-        const b2 = this.readByte(addr + 2);
-        const b3 = this.readByte(addr + 3);
-        return (b3 << 24) | (b2 << 16) | (b1 << 8) | b0;
+    // Đọc byte bất đồng bộ (dùng cho load/store byte/halfword)
+    readByteAsync(address) {
+        return new Promise((resolve, reject) => {
+            this.requestQueue.push({
+                type: 'readByte',
+                address: address | 0,
+                resolve, reject,
+                state: 0,
+                cycles: 0
+            });
+        });
     }
-    
-    writeWord(address, value) {
-        const addr = address | 0;
-        this.writeByte(addr, value & 0xFF);
-        this.writeByte(addr + 1, (value >> 8) & 0xFF);
-        this.writeByte(addr + 2, (value >> 16) & 0xFF);
-        this.writeByte(addr + 3, (value >> 24) & 0xFF);
+
+    writeByteAsync(address, value) {
+        return new Promise((resolve, reject) => {
+            this.requestQueue.push({
+                type: 'writeByte',
+                address: address | 0,
+                value,
+                resolve, reject,
+                state: 0,
+                cycles: 0
+            });
+        });
+    }
+
+    // Hàm tick: mỗi lần gọi là 1 cycle TileLink-UL
+    tick() {
+        // Nếu không có request đang xử lý, lấy từ queue
+        if (!this.currentRequest && this.requestQueue.length > 0) {
+            this.currentRequest = this.requestQueue.shift();
+            this.currentRequest.state = 1;
+            this.currentRequest.cycles = 1;
+        }
+
+        if (this.currentRequest) {
+            switch (this.currentRequest.state) {
+                case 1: // Cycle 1: CPU gửi yêu cầu lên BUS
+                    // a_valid = 1, a_ready = 1
+                    this.currentRequest.state = 2;
+                    break;
+                case 2: // Cycle 2: BUS chuyển yêu cầu đến MEM
+                    this.currentRequest.state = 3;
+                    break;
+                case 3: // Cycle 3: MEM đọc/ghi dữ liệu
+                    if (this.currentRequest.type === 'read') {
+                        this.currentRequest.data =
+                            ((this.mem[this.currentRequest.address + 3] ?? 0) << 24) |
+                            ((this.mem[this.currentRequest.address + 2] ?? 0) << 16) |
+                            ((this.mem[this.currentRequest.address + 1] ?? 0) << 8) |
+                            (this.mem[this.currentRequest.address] ?? 0);
+                    } else if (this.currentRequest.type === 'write') {
+                        this.mem[this.currentRequest.address] = this.currentRequest.value & 0xFF;
+                        this.mem[this.currentRequest.address + 1] = (this.currentRequest.value >> 8) & 0xFF;
+                        this.mem[this.currentRequest.address + 2] = (this.currentRequest.value >> 16) & 0xFF;
+                        this.mem[this.currentRequest.address + 3] = (this.currentRequest.value >> 24) & 0xFF;
+                    } else if (this.currentRequest.type === 'readByte') {
+                        this.currentRequest.data = this.mem[this.currentRequest.address] ?? 0;
+                    } else if (this.currentRequest.type === 'writeByte') {
+                        this.mem[this.currentRequest.address] = this.currentRequest.value & 0xFF;
+                    }
+                    this.currentRequest.state = 4;
+                    break;
+                case 4: // Cycle 4: MEM gửi dữ liệu trả về BUS
+                    this.currentRequest.state = 5;
+                    break;
+                case 5: // Cycle 5: BUS trả dữ liệu về CPU (Promise resolve)
+                    if (this.currentRequest.type === 'read' || this.currentRequest.type === 'readByte') {
+                        this.currentRequest.resolve(this.currentRequest.data);
+                    } else {
+                        this.currentRequest.resolve(true);
+                    }
+                    this.currentRequest = null;
+                    break;
+            }
+            if(this.currentRequest) {
+                this.currentRequest.cycles++;
+            }
+        }
+    }
+
+    // Hàm này phải được gọi liên tục để tiến hành các cycle
+    tickUntilIdle(callback) {
+        const tickFn = () => {
+            this.tick();
+            if (this.currentRequest || this.requestQueue.length > 0) {
+                setTimeout(tickFn, 0);
+            } else if (callback) {
+                callback();
+            }
+        };
+        tickFn();
     }
 
     loadMemoryMap(memoryMap) {
         this.mem = { ...memoryMap };
     }
-
     reset() {
         this.mem = {};
+        this.requestQueue = [];
+        this.currentRequest = null;
     }
 }
 
@@ -78,10 +176,45 @@ export const simulator = {
         this.pc = programData.startAddress || 0;
     },
 
-    run() {
+    // Chạy 1 lệnh (step) với TileLink-UL tick
+    async step() {
+        if (this.pc === null || this.pc === undefined) {
+            throw new Error("Cannot execute step: Program Counter (PC) is not set or is invalid.");
+        }
+        const currentPcForStep = this.pc;
+        // Fetch instruction (qua TileLink-UL, nhiều cycle)
+        const instructionWord = await this.fetchWithTick(currentPcForStep);
+        if (instructionWord === undefined) {
+            throw new Error(`Failed to fetch instruction at address 0x${currentPcForStep.toString(16).padStart(8, '0')}. Halting.`);
+        }
+        // Dừng khi gặp mã máy 0x00000000
+if (instructionWord === 0x00000000) {
+    this.isRunning = false;
+    console.warn(`Simulation stopped: NOP or empty instruction at PC 0x${currentPcForStep.toString(16).padStart(8, '0')}`);
+    return;
+}
+        const decoded = this.decode(instructionWord);
+        if (decoded.opName === 'UNKNOWN') {
+            throw new Error(`Could not decode instruction word: 0x${instructionWord.toString(16).padStart(8, '0')} at PC 0x${currentPcForStep.toString(16).padStart(8, '0')}`);
+        }
+        const executionResult = await this.executeWithTick(decoded);
+        if (executionResult && executionResult.nextPc !== undefined) {
+            this.pc = executionResult.nextPc;
+        } else {
+            this.pc = currentPcForStep + 4;
+        }
+        this.registers[0] = 0;
+        this.instructionCount++;
+        if (typeof window !== 'undefined' && window.updateUIGlobally) {
+            window.updateUIGlobally();
+        }
+    },
+
+    // Chạy liên tục (run) với tick
+    async run() {
         this.isRunning = true;
         this.instructionCount = 0;
-        const runLoop = () => {
+        const runLoop = async () => {
             if (!this.isRunning) {
                 if (typeof window !== 'undefined' && window.updateUIGlobally) window.updateUIGlobally();
                 return;
@@ -95,7 +228,7 @@ export const simulator = {
                 return;
             }
             try {
-                this.step();
+                await this.step();
                 if (this.isRunning) {
                     setTimeout(runLoop, 0);
                 } else {
@@ -115,44 +248,22 @@ export const simulator = {
         this.isRunning = false;
     },
 
-    step() {
-        if (this.pc === null || this.pc === undefined) {
-            throw new Error("Cannot execute step: Program Counter (PC) is not set or is invalid.");
-        }
-        const currentPcForStep = this.pc;
-        const instructionWord = this.fetch(currentPcForStep);
-        if (instructionWord === undefined) {
-            throw new Error(`Failed to fetch instruction at address 0x${currentPcForStep.toString(16).padStart(8, '0')}. Halting.`);
-        }
-        const decoded = this.decode(instructionWord);
-        if (decoded.opName === 'UNKNOWN') {
-            throw new Error(`Could not decode instruction word: 0x${instructionWord.toString(16).padStart(8, '0')} at PC 0x${currentPcForStep.toString(16).padStart(8, '0')}`);
-        }
-        const executionResult = this.execute(decoded);
-        if (executionResult && executionResult.nextPc !== undefined) {
-            this.pc = executionResult.nextPc;
-        } else {
-            this.pc = currentPcForStep + 4;
-        }
-        this.registers[0] = 0;
-        this.instructionCount++;
-        if (typeof window !== 'undefined' && window.updateUIGlobally) {
-            window.updateUIGlobally();
-        }
-    },
-    // --- TileLink-UL FETCH ---
-    fetch(address) {
+    // --- TileLink-UL FETCH với tick ---
+    async fetchWithTick(address) {
         const addrInt = parseInt(address);
         if (isNaN(addrInt)) {
             console.error(`Fetch Error: Invalid address format "${address}"`);
             return undefined;
         }
-        try {
-            return this.tilelinkMem.readWord(addrInt);
-        } catch (e) {
-            console.error(e.message);
-            return undefined;
+        let result;
+        let done = false;
+        this.tilelinkMem.readWordAsync(addrInt).then(val => { result = val; done = true; });
+        // Tick cho đến khi xong
+        while (!done) {
+            await new Promise(res => setTimeout(res, 0));
+            this.tilelinkMem.tick();
         }
+        return result;
     },
 
     // DECODE: Giải mã từ lệnh 32-bit thành các trường và tên lệnh
@@ -264,7 +375,7 @@ export const simulator = {
             // FMV.W.X: rd(fp), rs1(int). funct7='1111000', rs2=0, funct3(rm)=0
             "FMV.W.X": { type: "R-FP-CVT", opcode: "1010011", funct7: "1111000", rs2_subfield: "00000", funct3_fixed: "000"},
         };
-
+        
         // Lặp qua bảng định dạng để tìm lệnh khớp
         for (const name in instructionFormats) {
             const format = instructionFormats[name];
@@ -370,214 +481,262 @@ export const simulator = {
         return { opName, type, opcode: opcodeBin, rd, rs1, rs2, funct3: funct3Bin, funct7: funct7Bin, imm, rm };
     },
 
-    // EXECUTE: Thực thi lệnh đã được giải mã
-    execute(decoded) {
-        const { opName, type, rd, rs1, rs2, funct3, funct7, imm, rm } = decoded;
-        const val1_int = (rs1 === 0 && type !== 'R-FP-CVT' && type !== 'FMV.W.X') ? 0 : (this.registers[rs1] | 0);
-        const val2_int = (rs2 === 0 && type !== 'R-FP-CVT') ? 0 : (this.registers[rs2] | 0);
-        const val1_fp = this.fregisters[rs1];
-        const val2_fp = this.fregisters[rs2];
-        const pc = this.pc;
-        let result_int = undefined;
-        let result_fp = undefined;
-        let memoryAddress = 0;
-        let memoryValue = 0;
-        let branchTaken = false;
-        let nextPc = undefined;
-        const INT32_MIN = -2147483648;
-        const UINT32_MAX_AS_SIGNED = -1;
+async executeWithTick(decoded) {
+    const { opName, type, rd, rs1, rs2, funct3, funct7, imm, rm } = decoded;
+    const val1_int = (rs1 === 0 && type !== 'R-FP-CVT' && type !== 'FMV.W.X') ? 0 : (this.registers[rs1] | 0);
+    const val2_int = (rs2 === 0 && type !== 'R-FP-CVT') ? 0 : (this.registers[rs2] | 0);
+    const val1_fp = this.fregisters[rs1];
+    const val2_fp = this.fregisters[rs2];
+    const pc = this.pc;
+    let result_int = undefined;
+    let result_fp = undefined;
+    let memoryAddress = 0;
+    let memoryValue = 0;
+    let branchTaken = false;
+    let nextPc = undefined;
+    const INT32_MIN = -2147483648;
+    const UINT32_MAX_AS_SIGNED = -1;
 
-        switch (opName) {
-            // --- Integer & Mul/Div ---
-            case 'ADD': result_int = (val1_int + val2_int) | 0; break;
-            case 'SUB': result_int = (val1_int - val2_int) | 0; break;
-            case 'SLL': result_int = (val1_int << (val2_int & 0x1F)) | 0; break;
-            case 'SLT': result_int = (val1_int < val2_int) ? 1 : 0; break;
-            case 'SLTU': result_int = ((val1_int >>> 0) < (val2_int >>> 0)) ? 1 : 0; break;
-            case 'XOR': result_int = (val1_int ^ val2_int) | 0; break;
-            case 'SRL': result_int = val1_int >>> (val2_int & 0x1F); break;
-            case 'SRA': result_int = val1_int >> (val2_int & 0x1F); break;
-            case 'OR': result_int = (val1_int | val2_int) | 0; break;
-            case 'AND': result_int = (val1_int & val2_int) | 0; break;
-            case 'MUL': result_int = Math.imul(val1_int, val2_int); break;
-            case 'MULH': result_int = Number((BigInt(val1_int) * BigInt(val2_int)) >> 32n); break;
-            case 'MULHSU': result_int = Number((BigInt(val1_int) * BigInt(val2_int >>> 0)) >> 32n); break;
-            case 'MULHU': result_int = Number((BigInt(val1_int >>> 0) * BigInt(val2_int >>> 0)) >> 32n); break;
-            case 'DIV':
-                if (val2_int === 0) result_int = UINT32_MAX_AS_SIGNED;
-                else if (val1_int === INT32_MIN && val2_int === -1) result_int = INT32_MIN;
-                else result_int = (val1_int / val2_int) | 0;
-                break;
-            case 'DIVU':
-                if (val2_int === 0) result_int = UINT32_MAX_AS_SIGNED;
-                else result_int = ((val1_int >>> 0) / (val2_int >>> 0)) | 0;
-                break;
-            case 'REM':
-                if (val2_int === 0) result_int = val1_int;
-                else if (val1_int === INT32_MIN && val2_int === -1) result_int = 0;
-                else result_int = val1_int % val2_int;
-                break;
-            case 'REMU':
-                if (val2_int === 0) result_int = val1_int >>> 0;
-                else result_int = (val1_int >>> 0) % (val2_int >>> 0);
-                break;
-            case 'ADDI': result_int = (val1_int + imm) | 0; break;
-            case 'SLTI': result_int = (val1_int < imm) ? 1 : 0; break;
-            case 'SLTIU': result_int = ((val1_int >>> 0) < (imm >>> 0)) ? 1 : 0; break;
-            case 'XORI': result_int = (val1_int ^ imm) | 0; break;
-            case 'ORI': result_int = (val1_int | imm) | 0; break;
-            case 'ANDI': result_int = (val1_int & imm) | 0; break;
-            case 'SLLI': result_int = (val1_int << imm) | 0; break;
-            case 'SRLI': result_int = val1_int >>> imm; break;
-            case 'SRAI': result_int = val1_int >> imm; break;
-            case 'LB':
-                memoryAddress = (val1_int + imm) | 0;
-                memoryValue = this.tilelinkMem.readByte(memoryAddress);
-                result_int = (memoryValue & 0x80) ? (memoryValue | 0xFFFFFF00) : (memoryValue & 0xFF);
-                break;
-            case 'LH':
-                memoryAddress = (val1_int + imm) | 0;
-                const lh_b0 = this.tilelinkMem.readByte(memoryAddress), lh_b1 = this.tilelinkMem.readByte(memoryAddress + 1);
-                memoryValue = (lh_b1 << 8) | lh_b0;
-                result_int = (memoryValue & 0x8000) ? (memoryValue | 0xFFFF0000) : (memoryValue & 0xFFFF);
-                break;
-            case 'LW':
-                memoryAddress = (val1_int + imm) | 0;
-                result_int = this.tilelinkMem.readWord(memoryAddress);
-                break;
-            case 'LBU':
-                memoryAddress = (val1_int + imm) | 0;
-                memoryValue = this.tilelinkMem.readByte(memoryAddress);
-                result_int = memoryValue & 0xFF;
-                break;
-            case 'LHU':
-                memoryAddress = (val1_int + imm) | 0;
-                const lhu_b0 = this.tilelinkMem.readByte(memoryAddress), lhu_b1 = this.tilelinkMem.readByte(memoryAddress + 1);
-                memoryValue = (lhu_b1 << 8) | lhu_b0;
-                result_int = memoryValue & 0xFFFF;
-                break;
-            case 'SB':
-                memoryAddress = (val1_int + imm) | 0;
-                this.tilelinkMem.writeByte(memoryAddress, val2_int);
-                break;
-            case 'SH':
-                memoryAddress = (val1_int + imm) | 0;
-                this.tilelinkMem.writeByte(memoryAddress, val2_int & 0xFF);
-                this.tilelinkMem.writeByte(memoryAddress + 1, (val2_int >> 8) & 0xFF);
-                break;
-            case 'SW':
-                memoryAddress = (val1_int + imm) | 0;
-                this.tilelinkMem.writeWord(memoryAddress, val2_int);
-                break;
-            case 'LUI': result_int = imm; break;
-            case 'AUIPC': result_int = (pc + imm) | 0; break;
-            case 'JAL': result_int = pc + 4; nextPc = (pc + imm) | 0; break;
-            case 'JALR': result_int = pc + 4; nextPc = (val1_int + imm) & ~1; break;
-            case 'BEQ': if (val1_int === val2_int) branchTaken = true; break;
-            case 'BNE': if (val1_int !== val2_int) branchTaken = true; break;
-            case 'BLT': if (val1_int < val2_int) branchTaken = true; break;
-            case 'BGE': if (val1_int >= val2_int) branchTaken = true; break;
-            case 'BLTU': if ((val1_int >>> 0) < (val2_int >>> 0)) branchTaken = true; break;
-            case 'BGEU': if ((val1_int >>> 0) >= (val2_int >>> 0)) branchTaken = true; break;
-            case 'ECALL': this.handleSyscall(); break;
-            case 'EBREAK': this.isRunning = false; throw new Error("EBREAK instruction encountered.");
-
-            // --- RV32F ---
-            case 'FLW':
-                memoryAddress = (val1_int + imm) | 0;
-                const flw_b0 = this.tilelinkMem.readByte(memoryAddress);
-                const flw_b1 = this.tilelinkMem.readByte(memoryAddress + 1);
-                const flw_b2 = this.tilelinkMem.readByte(memoryAddress + 2);
-                const flw_b3 = this.tilelinkMem.readByte(memoryAddress + 3);
-                const flw_buffer = new ArrayBuffer(4);
-                const flw_view = new DataView(flw_buffer);
-                flw_view.setUint8(0, flw_b0); flw_view.setUint8(1, flw_b1);
-                flw_view.setUint8(2, flw_b2); flw_view.setUint8(3, flw_b3);
-                result_fp = flw_view.getFloat32(0, true);
-                break;
-            case 'FSW':
-                memoryAddress = (val1_int + imm) | 0;
-                const fsw_float_val = val2_fp;
-                const fsw_buffer = new ArrayBuffer(4);
-                const fsw_view = new DataView(fsw_buffer);
-                fsw_view.setFloat32(0, fsw_float_val, true);
-                for (let i = 0; i < 4; i++) {
-                    this.tilelinkMem.writeByte(memoryAddress + i, fsw_view.getUint8(i));
-                }
-                break;
-            case 'FADD.S': result_fp = val1_fp + val2_fp; break;
-            case 'FSUB.S': result_fp = val1_fp - val2_fp; break;
-            case 'FMUL.S': result_fp = val1_fp * val2_fp; break;
-            case 'FDIV.S':
-                if (val2_fp === 0.0) {
-                    result_fp = (val1_fp > 0.0 ? Infinity : (val1_fp < 0.0 ? -Infinity : NaN));
-                } else {
-                    result_fp = val1_fp / val2_fp;
-                }
-                break;
-            case 'FCVT.W.S':
-                let rounded_w;
-                switch (rm) {
-                    case 0b000: rounded_w = Math.round(val1_fp); break;
-                    case 0b001: rounded_w = Math.trunc(val1_fp); break;
-                    default: rounded_w = Math.round(val1_fp);
-                }
-                if (isNaN(val1_fp) || val1_fp > 2147483647.0) rounded_w = 2147483647;
-                else if (val1_fp < -2147483648.0) rounded_w = -2147483648;
-                result_int = rounded_w | 0;
-                break;
-            case 'FCVT.S.W':
-                result_fp = Number(val1_int);
-                break;
-            case 'FEQ.S':
-                if (isNaN(val1_fp) || isNaN(val2_fp)) result_int = 0;
-                else result_int = (val1_fp === val2_fp) ? 1 : 0;
-                break;
-            case 'FLT.S':
-                if (isNaN(val1_fp) || isNaN(val2_fp)) result_int = 0;
-                else result_int = (val1_fp < val2_fp) ? 1 : 0;
-                break;
-            case 'FLE.S':
-                if (isNaN(val1_fp) || isNaN(val2_fp)) result_int = 0;
-                else result_int = (val1_fp <= val2_fp) ? 1 : 0;
-                break;
-            case 'FMV.X.W':
-                const fmvxw_buffer = new ArrayBuffer(4);
-                const fmvxw_view = new DataView(fmvxw_buffer);
-                fmvxw_view.setFloat32(0, val1_fp, true);
-                result_int = fmvxw_view.getInt32(0, true);
-                break;
-            case 'FMV.W.X':
-                const fmvwx_buffer = new ArrayBuffer(4);
-                const fmvwx_view = new DataView(fmvwx_buffer);
-                fmvwx_view.setInt32(0, val1_int, true);
-                result_fp = fmvwx_view.getFloat32(0, true);
-                break;
-            default:
-                throw new Error(`Execute: Instruction ${opName} (Type: ${type}) is not implemented in the simulator.`);
+    switch (opName) {
+        // --- Integer & Mul/Div ---
+        case 'ADD': result_int = (val1_int + val2_int) | 0; break;
+        case 'SUB': result_int = (val1_int - val2_int) | 0; break;
+        case 'SLL': result_int = (val1_int << (val2_int & 0x1F)) | 0; break;
+        case 'SLT': result_int = (val1_int < val2_int) ? 1 : 0; break;
+        case 'SLTU': result_int = ((val1_int >>> 0) < (val2_int >>> 0)) ? 1 : 0; break;
+        case 'XOR': result_int = (val1_int ^ val2_int) | 0; break;
+        case 'SRL': result_int = val1_int >>> (val2_int & 0x1F); break;
+        case 'SRA': result_int = val1_int >> (val2_int & 0x1F); break;
+        case 'OR': result_int = (val1_int | val2_int) | 0; break;
+        case 'AND': result_int = (val1_int & val2_int) | 0; break;
+        case 'MUL': result_int = Math.imul(val1_int, val2_int); break;
+        case 'MULH': result_int = Number((BigInt(val1_int) * BigInt(val2_int)) >> 32n); break;
+        case 'MULHSU': result_int = Number((BigInt(val1_int) * BigInt(val2_int >>> 0)) >> 32n); break;
+        case 'MULHU': result_int = Number((BigInt(val1_int >>> 0) * BigInt(val2_int >>> 0)) >> 32n); break;
+        case 'DIV':
+            if (val2_int === 0) result_int = UINT32_MAX_AS_SIGNED;
+            else if (val1_int === INT32_MIN && val2_int === -1) result_int = INT32_MIN;
+            else result_int = (val1_int / val2_int) | 0;
+            break;
+        case 'DIVU':
+            if (val2_int === 0) result_int = UINT32_MAX_AS_SIGNED;
+            else result_int = ((val1_int >>> 0) / (val2_int >>> 0)) | 0;
+            break;
+        case 'REM':
+            if (val2_int === 0) result_int = val1_int;
+            else if (val1_int === INT32_MIN && val2_int === -1) result_int = 0;
+            else result_int = val1_int % val2_int;
+            break;
+        case 'REMU':
+            if (val2_int === 0) result_int = val1_int >>> 0;
+            else result_int = (val1_int >>> 0) % (val2_int >>> 0);
+            break;
+        case 'ADDI': result_int = (val1_int + imm) | 0; break;
+        case 'SLTI': result_int = (val1_int < imm) ? 1 : 0; break;
+        case 'SLTIU': result_int = ((val1_int >>> 0) < (imm >>> 0)) ? 1 : 0; break;
+        case 'XORI': result_int = (val1_int ^ imm) | 0; break;
+        case 'ORI': result_int = (val1_int | imm) | 0; break;
+        case 'ANDI': result_int = (val1_int & imm) | 0; break;
+        case 'SLLI': result_int = (val1_int << imm) | 0; break;
+        case 'SRLI': result_int = val1_int >>> imm; break;
+        case 'SRAI': result_int = val1_int >> imm; break;
+        case 'LB': {
+            memoryAddress = (val1_int + imm) | 0;
+            memoryValue = await this.readByteWithTick(memoryAddress);
+            result_int = (memoryValue & 0x80) ? (memoryValue | 0xFFFFFF00) : (memoryValue & 0xFF);
+            break;
         }
+        case 'LH': {
+            memoryAddress = (val1_int + imm) | 0;
+            const lh_b0 = await this.readByteWithTick(memoryAddress);
+            const lh_b1 = await this.readByteWithTick(memoryAddress + 1);
+            memoryValue = (lh_b1 << 8) | lh_b0;
+            result_int = (memoryValue & 0x8000) ? (memoryValue | 0xFFFF0000) : (memoryValue & 0xFFFF);
+            break;
+        }
+        case 'LW': {
+            memoryAddress = (val1_int + imm) | 0;
+            result_int = await this.readWordWithTick(memoryAddress);
+            break;
+        }
+        case 'LBU': {
+            memoryAddress = (val1_int + imm) | 0;
+            memoryValue = await this.readByteWithTick(memoryAddress);
+            result_int = memoryValue & 0xFF;
+            break;
+        }
+        case 'LHU': {
+            memoryAddress = (val1_int + imm) | 0;
+            const lhu_b0 = await this.readByteWithTick(memoryAddress);
+            const lhu_b1 = await this.readByteWithTick(memoryAddress + 1);
+            memoryValue = (lhu_b1 << 8) | lhu_b0;
+            result_int = memoryValue & 0xFFFF;
+            break;
+        }
+        case 'SB': {
+            memoryAddress = (val1_int + imm) | 0;
+            await this.writeByteWithTick(memoryAddress, val2_int);
+            break;
+        }
+        case 'SH': {
+            memoryAddress = (val1_int + imm) | 0;
+            await this.writeByteWithTick(memoryAddress, val2_int & 0xFF);
+            await this.writeByteWithTick(memoryAddress + 1, (val2_int >> 8) & 0xFF);
+            break;
+        }
+        case 'SW': {
+            memoryAddress = (val1_int + imm) | 0;
+            await this.writeWordWithTick(memoryAddress, val2_int);
+            break;
+        }
+        case 'LUI': result_int = imm; break;
+        case 'AUIPC': result_int = (pc + imm) | 0; break;
+        case 'JAL': result_int = pc + 4; nextPc = (pc + imm) | 0; break;
+        case 'JALR': result_int = pc + 4; nextPc = (val1_int + imm) & ~1; break;
+        case 'BEQ': if (val1_int === val2_int) branchTaken = true; break;
+        case 'BNE': if (val1_int !== val2_int) branchTaken = true; break;
+        case 'BLT': if (val1_int < val2_int) branchTaken = true; break;
+        case 'BGE': if (val1_int >= val2_int) branchTaken = true; break;
+        case 'BLTU': if ((val1_int >>> 0) < (val2_int >>> 0)) branchTaken = true; break;
+        case 'BGEU': if ((val1_int >>> 0) >= (val2_int >>> 0)) branchTaken = true; break;
+        case 'ECALL': await this.handleSyscall(); break;
+        case 'EBREAK': this.isRunning = false; throw new Error("EBREAK instruction encountered.");
 
-        if (rd !== 0) {
-            if (result_int !== undefined) {
-                this.registers[rd] = result_int | 0;
+        // --- RV32F ---
+        case 'FLW': {
+            memoryAddress = (val1_int + imm) | 0;
+            const flw_b0 = await this.readByteWithTick(memoryAddress);
+            const flw_b1 = await this.readByteWithTick(memoryAddress + 1);
+            const flw_b2 = await this.readByteWithTick(memoryAddress + 2);
+            const flw_b3 = await this.readByteWithTick(memoryAddress + 3);
+            const flw_buffer = new ArrayBuffer(4);
+            const flw_view = new DataView(flw_buffer);
+            flw_view.setUint8(0, flw_b0); flw_view.setUint8(1, flw_b1);
+            flw_view.setUint8(2, flw_b2); flw_view.setUint8(3, flw_b3);
+            result_fp = flw_view.getFloat32(0, true);
+            break;
+        }
+        case 'FSW': {
+            memoryAddress = (val1_int + imm) | 0;
+            const fsw_float_val = val2_fp;
+            const fsw_buffer = new ArrayBuffer(4);
+            const fsw_view = new DataView(fsw_buffer);
+            fsw_view.setFloat32(0, fsw_float_val, true);
+            for (let i = 0; i < 4; i++) {
+                await this.writeByteWithTick(memoryAddress + i, fsw_view.getUint8(i));
             }
-            if (result_fp !== undefined) {
-                this.fregisters[rd] = result_fp;
+            break;
+        }
+        case 'FADD.S': result_fp = val1_fp + val2_fp; break;
+        case 'FSUB.S': result_fp = val1_fp - val2_fp; break;
+        case 'FMUL.S': result_fp = val1_fp * val2_fp; break;
+        case 'FDIV.S':
+            if (val2_fp === 0.0) {
+                result_fp = (val1_fp > 0.0 ? Infinity : (val1_fp < 0.0 ? -Infinity : NaN));
+            } else {
+                result_fp = val1_fp / val2_fp;
             }
-        } else if (rd === 0 && (result_int !== undefined && result_int !== 0)) {
-            // Ignore write to x0
-        } else if (rd === 0 && (result_fp !== undefined && result_fp !== 0.0)) {
+            break;
+        case 'FCVT.W.S': {
+            let rounded_w;
+            switch (rm) {
+                case 0b000: rounded_w = Math.round(val1_fp); break;
+                case 0b001: rounded_w = Math.trunc(val1_fp); break;
+                default: rounded_w = Math.round(val1_fp);
+            }
+            if (isNaN(val1_fp) || val1_fp > 2147483647.0) rounded_w = 2147483647;
+            else if (val1_fp < -2147483648.0) rounded_w = -2147483648;
+            result_int = rounded_w | 0;
+            break;
+        }
+        case 'FCVT.S.W':
+            result_fp = Number(val1_int);
+            break;
+        case 'FEQ.S':
+            if (isNaN(val1_fp) || isNaN(val2_fp)) result_int = 0;
+            else result_int = (val1_fp === val2_fp) ? 1 : 0;
+            break;
+        case 'FLT.S':
+            if (isNaN(val1_fp) || isNaN(val2_fp)) result_int = 0;
+            else result_int = (val1_fp < val2_fp) ? 1 : 0;
+            break;
+        case 'FLE.S':
+            if (isNaN(val1_fp) || isNaN(val2_fp)) result_int = 0;
+            else result_int = (val1_fp <= val2_fp) ? 1 : 0;
+            break;
+        case 'FMV.X.W': {
+            const fmvxw_buffer = new ArrayBuffer(4);
+            const fmvxw_view = new DataView(fmvxw_buffer);
+            fmvxw_view.setFloat32(0, val1_fp, true);
+            result_int = fmvxw_view.getInt32(0, true);
+            break;
+        }
+        case 'FMV.W.X': {
+            const fmvwx_buffer = new ArrayBuffer(4);
+            const fmvwx_view = new DataView(fmvwx_buffer);
+            fmvwx_view.setInt32(0, val1_int, true);
+            result_fp = fmvwx_view.getFloat32(0, true);
+            break;
+        }
+        default:
+            throw new Error(`Execute: Instruction ${opName} (Type: ${type}) is not implemented in the simulator.`);
+    }
+
+    if (rd !== 0) {
+        if (result_int !== undefined) {
+            this.registers[rd] = result_int | 0;
+        }
+        if (result_fp !== undefined) {
             this.fregisters[rd] = result_fp;
         }
+    } else if (rd === 0 && (result_int !== undefined && result_int !== 0)) {
+        // Ignore write to x0
+    } else if (rd === 0 && (result_fp !== undefined && result_fp !== 0.0)) {
+        this.fregisters[rd] = result_fp;
+    }
 
-        if (type === 'B' && branchTaken) {
-            nextPc = (pc + imm) | 0;
+    if (type === 'B' && branchTaken) {
+        nextPc = (pc + imm) | 0;
+    }
+    return { nextPc };
+},
+
+    async readWordWithTick(addr) {
+        let result, done = false;
+        this.tilelinkMem.readWordAsync(addr).then(val => { result = val; done = true; });
+        while (!done) {
+            await new Promise(res => setTimeout(res, 0));
+            this.tilelinkMem.tick();
         }
-        return { nextPc };
+        return result;
     },
-
+    async writeWordWithTick(addr, value) {
+        let done = false;
+        this.tilelinkMem.writeWordAsync(addr, value).then(() => { done = true; });
+        while (!done) {
+            await new Promise(res => setTimeout(res, 0));
+            this.tilelinkMem.tick();
+        }
+    },
+    async readByteWithTick(addr) {
+        let result, done = false;
+        this.tilelinkMem.readByteAsync(addr).then(val => { result = val; done = true; });
+        while (!done) {
+            await new Promise(res => setTimeout(res, 0));
+            this.tilelinkMem.tick();
+        }
+        return result;
+    },
+    async writeByteWithTick(addr, value) {
+        let done = false;
+        this.tilelinkMem.writeByteAsync(addr, value).then(() => { done = true; });
+        while (!done) {
+            await new Promise(res => setTimeout(res, 0));
+            this.tilelinkMem.tick();
+        }
+    },
     // --- System Call: dùng tilelinkMem ---
-    handleSyscall() {
+    async handleSyscall() {
         const syscallId = this.registers[17];
         const arg0 = this.registers[10];
         const arg1 = this.registers[11];
@@ -592,13 +751,13 @@ export const simulator = {
             case 1:
                 alert(`Print Int: ${arg0}`);
                 break;
-            case 4:
+            case 4: {
                 let str = "";
                 let addr = arg0;
                 let charByte;
                 while (true) {
                     try {
-                        charByte = this.tilelinkMem.readByte(addr);
+                        charByte = await this.tilelinkMem.readByteAsync(addr);
                     } catch {
                         break;
                     }
@@ -612,7 +771,8 @@ export const simulator = {
                 }
                 alert(`Print String:\n${str}`);
                 break;
-            case 64:
+            }
+            case 64: {
                 const fd_write = arg0;
                 const bufAddr_write = arg1;
                 const count_write = arg2;
@@ -621,7 +781,7 @@ export const simulator = {
                     for (let i = 0; i < count_write; i++) {
                         let byte;
                         try {
-                            byte = this.tilelinkMem.readByte(bufAddr_write + i);
+                            byte = await this.tilelinkMem.readByteAsync(bufAddr_write + i);
                         } catch {
                             this.registers[10] = i;
                             return;
@@ -634,6 +794,7 @@ export const simulator = {
                     this.registers[10] = -1;
                 }
                 break;
+            }
             default:
                 console.warn(`Unsupported syscall ID: ${syscallId}`);
         }
