@@ -1,191 +1,157 @@
 // simulator.js
 // Mô phỏng việc thực thi mã máy RISC-V, bao gồm RV32I, RV32M và các lệnh RV32F cơ bản.
+// --- TileLink-UL Memory Model ---
+class TileLinkULMemory {
+    constructor() {
+        this.mem = {}; // Bộ nhớ chính, truy cập theo địa chỉ byte
+    }
 
-export const simulator = {
-    // --- Trạng thái của Simulator ---
-    registers: new Int32Array(32),      // Dàn thanh ghi số nguyên 32-bit (x0-x31)
-    fregisters: new Float32Array(32),   // Dàn thanh ghi điểm động 32-bit (f0-f31) cho RV32F
-    memory: {},                         // Bộ nhớ chính, truy cập theo địa chỉ byte
-    pc: 0,                              // Thanh ghi Program Counter, chỉ địa chỉ lệnh tiếp theo
-    isRunning: false,                   // Cờ cho biết simulator có đang trong chế độ chạy tự động (Run) không
-    instructionCount: 0,                // Bộ đếm số lệnh đã thực thi
-    maxSteps: 1000000,                  // Giới hạn số lệnh thực thi tối đa trong một lần Run để tránh vòng lặp vô tận
+    readByte(address) {
+        const b = this.mem[address | 0];
+        if (b === undefined) throw new Error(`TileLinkUL: Read byte error at 0x${address.toString(16)}`);
+        return b;
+    }
 
-    // --- Các hàm quản lý trạng thái Simulator ---
+    writeByte(address, value) {
+        this.mem[address | 0] = value & 0xFF;
+    }
 
-    // Đặt lại giá trị tất cả các thanh ghi (integer và FP) và PC về 0
-    resetRegisters() {
-        this.registers.fill(0);         // Đặt tất cả thanh ghi số nguyên về 0
-        this.fregisters.fill(0.0);      // Đặt tất cả thanh ghi điểm động về 0.0
-        this.pc = 0;                    // Đặt Program Counter về 0
-        // console.log("Simulator integer and FP registers reset.");
-    },
+    readWord(address) {
+        const addr = address | 0;
+        const b0 = this.readByte(addr);
+        const b1 = this.readByte(addr + 1);
+        const b2 = this.readByte(addr + 2);
+        const b3 = this.readByte(addr + 3);
+        return (b3 << 24) | (b2 << 16) | (b1 << 8) | b0;
+    }
+    writeWord(address, value) {
+        const addr = address | 0;
+        this.writeByte(addr, value & 0xFF);
+        this.writeByte(addr + 1, (value >> 8) & 0xFF);
+        this.writeByte(addr + 2, (value >> 16) & 0xFF);
+        this.writeByte(addr + 3, (value >> 24) & 0xFF);
+    }
 
-    // Xóa toàn bộ nội dung bộ nhớ
-    resetMemory() {
-        this.memory = {}; // Tạo một đối tượng bộ nhớ mới (rỗng)
-        // console.log("Simulator memory reset.");
-    },
+    loadMemoryMap(memoryMap) {
+        this.mem = { ...memoryMap };
+    }
 
-    // Đặt lại toàn bộ trạng thái của simulator về giá trị ban đầu
     reset() {
-        this.resetRegisters(); // Gọi hàm reset thanh ghi
-        this.resetMemory();    // Gọi hàm reset bộ nhớ
-        this.isRunning = false; // Dừng trạng thái chạy tự động
-        this.instructionCount = 0; // Đặt lại bộ đếm lệnh
-        // console.log("Simulator state reset completely.");
+        this.mem = {};
+    }
+}
+
+// --- Simulator ---
+export const simulator = {
+    registers: new Int32Array(32),
+    fregisters: new Float32Array(32),
+    tilelinkMem: new TileLinkULMemory(),
+    pc: 0,
+    isRunning: false,
+    instructionCount: 0,
+    maxSteps: 1000000,
+
+    resetRegisters() {
+        this.registers.fill(0);
+        this.fregisters.fill(0.0);
+        this.pc = 0;
     },
 
-    /**
-     * Nạp chương trình (bao gồm dữ liệu và mã lệnh) vào bộ nhớ của simulator.
-     * @param {object} programData - Đối tượng chứa { memory, startAddress }.
-     * `memory` là một object map địa chỉ sang giá trị byte từ assembler.
-     * `startAddress` là địa chỉ bắt đầu thực thi.
-     */
-    loadProgram(programData) {
-        this.reset(); // Reset hoàn toàn simulator trước khi nạp chương trình mới
+    resetMemory() {
+        this.tilelinkMem.reset();
+    },
+    reset() {
+        this.resetRegisters();
+        this.resetMemory();
+        this.isRunning = false;
+        this.instructionCount = 0;
+    },
 
-        // Nạp toàn bộ bản đồ bộ nhớ (bao gồm cả data và instructions) từ assembler
+    loadProgram(programData) {
+        this.reset();
         if (programData.memory) {
-            // console.log("Loading memory map from assembler...");
-            // Sao chép trực tiếp, vì assembler đã chuẩn bị memory map đúng dạng byte
-            this.memory = { ...programData.memory }; // Sử dụng spread syntax để tạo bản sao nông
-            // console.log("Memory map loaded.");
+            this.tilelinkMem.loadMemoryMap(programData.memory);
         } else {
             console.warn("No memory map provided by assembler to load.");
         }
-
-        // Đặt Program Counter về địa chỉ bắt đầu được cung cấp bởi assembler, hoặc 0 nếu không có
         this.pc = programData.startAddress || 0;
-        // console.log(`Simulator PC set to start address: 0x${this.pc.toString(16).padStart(8, '0')}`);
-        // console.log("Simulator ready to run program.");
     },
 
-    // --- Các hàm điều khiển thực thi ---
-
-    // Bắt đầu chạy chương trình tự động cho đến khi dừng hoặc gặp giới hạn
     run() {
-        this.isRunning = true; // Đặt cờ đang chạy
-        this.instructionCount = 0; // Reset bộ đếm lệnh cho lần chạy này
-        // console.log(`Starting simulation run from PC: 0x${this.pc.toString(16).padStart(8, '0')}`);
-
-        // Vòng lặp chạy chính, sử dụng setTimeout để không chặn giao diện người dùng
+        this.isRunning = true;
+        this.instructionCount = 0;
         const runLoop = () => {
-            // Dừng nếu cờ isRunning bị tắt
             if (!this.isRunning) {
-                // console.log("Simulation halted by stop() or error or syscall exit.");
                 if (typeof window !== 'undefined' && window.updateUIGlobally) window.updateUIGlobally();
                 return;
             }
-
-            // Dừng nếu vượt quá số bước tối đa
             if (this.instructionCount >= this.maxSteps) {
                 this.isRunning = false;
                 const message = `Simulation stopped: Maximum instruction steps (${this.maxSteps}) reached.`;
                 console.warn(message);
-                alert(message); // Thông báo cho người dùng
+                alert(message);
                 if (typeof window !== 'undefined' && window.updateUIGlobally) window.updateUIGlobally();
                 return;
             }
-
             try {
-                this.step(); // Thực thi một lệnh
-
-                // Nếu vẫn đang chạy, lập lịch cho bước tiếp theo
+                this.step();
                 if (this.isRunning) {
-                    setTimeout(runLoop, 0); // Độ trễ 0ms để trình duyệt xử lý các tác vụ khác
+                    setTimeout(runLoop, 0);
                 } else {
-                    // console.log(`Simulation run finished after ${this.instructionCount} instructions. Final PC: 0x${this.pc.toString(16).padStart(8, '0')}`);
                     if (typeof window !== 'undefined' && window.updateUIGlobally) window.updateUIGlobally();
                 }
-
-            } catch (error) { // Bắt lỗi runtime trong quá trình thực thi
+            } catch (error) {
                 this.isRunning = false;
                 console.error("Error during simulation run:", error.message, error.stack);
                 alert(`Runtime Error: ${error.message}`);
                 if (typeof window !== 'undefined' && window.updateUIGlobally) window.updateUIGlobally();
             }
         };
-        setTimeout(runLoop, 0); // Bắt đầu vòng lặp chạy
+        setTimeout(runLoop, 0);
     },
 
-    // Yêu cầu dừng quá trình chạy tự động (Run)
     stop() {
-        this.isRunning = false; // Tắt cờ đang chạy
-        // console.log("Simulation run stop requested by user or event.");
+        this.isRunning = false;
     },
 
-    // Thực thi một chu trình lệnh (Fetch-Decode-Execute)
     step() {
         if (this.pc === null || this.pc === undefined) {
             throw new Error("Cannot execute step: Program Counter (PC) is not set or is invalid.");
         }
-        const currentPcForStep = this.pc; // Lưu PC hiện tại trước khi nó có thể thay đổi bởi lệnh jump/branch
-
-        // 1. FETCH: Lấy từ lệnh 32-bit từ bộ nhớ tại địa chỉ PC
+        const currentPcForStep = this.pc;
         const instructionWord = this.fetch(currentPcForStep);
-        if (instructionWord === undefined) { // Kiểm tra fetch thất bại (ví dụ: truy cập ngoài vùng nhớ)
+        if (instructionWord === undefined) {
             throw new Error(`Failed to fetch instruction at address 0x${currentPcForStep.toString(16).padStart(8, '0')}. Halting.`);
         }
-
-        // 2. DECODE: Giải mã từ lệnh thành các thành phần có ý nghĩa
         const decoded = this.decode(instructionWord);
-        if (decoded.opName === 'UNKNOWN') { // Nếu không giải mã được lệnh
+        if (decoded.opName === 'UNKNOWN') {
             throw new Error(`Could not decode instruction word: 0x${instructionWord.toString(16).padStart(8, '0')} at PC 0x${currentPcForStep.toString(16).padStart(8, '0')}`);
         }
-
-        // 3. EXECUTE: Thực thi lệnh đã giải mã
-        const executionResult = this.execute(decoded); // executionResult có thể chứa nextPc cho jump/branch
-
-        // 4. Cập nhật Program Counter (PC)
+        const executionResult = this.execute(decoded);
         if (executionResult && executionResult.nextPc !== undefined) {
-            this.pc = executionResult.nextPc; // Nếu lệnh là jump/branch và được thực hiện, PC được cập nhật theo kết quả lệnh
+            this.pc = executionResult.nextPc;
         } else {
-            this.pc = currentPcForStep + 4; // Mặc định, PC trỏ tới lệnh kế tiếp (mỗi lệnh 4 byte)
+            this.pc = currentPcForStep + 4;
         }
-
-        // 5. Write Back (đã được thực hiện bên trong execute nếu lệnh ghi vào thanh ghi)
-        this.registers[0] = 0; // Đảm bảo thanh ghi x0 (zero) luôn là 0 sau mỗi lệnh
-        this.instructionCount++;    // Tăng bộ đếm lệnh đã thực thi
-
-        // 6. Cập nhật Giao diện người dùng (nếu có)
+        this.registers[0] = 0;
+        this.instructionCount++;
         if (typeof window !== 'undefined' && window.updateUIGlobally) {
-            window.updateUIGlobally(); // Gọi hàm cập nhật UI toàn cục được định nghĩa trong javascript.js
+            window.updateUIGlobally();
         }
     },
-
-    // --- Các thành phần của lõi CPU mô phỏng ---
-
-    // FETCH: Đọc một từ lệnh 32-bit từ bộ nhớ tại địa chỉ cho trước
+    // --- TileLink-UL FETCH ---
     fetch(address) {
-        const addrInt = parseInt(address); // Chuyển địa chỉ sang số nguyên
-        if (isNaN(addrInt)) { // Kiểm tra nếu địa chỉ không hợp lệ
+        const addrInt = parseInt(address);
+        if (isNaN(addrInt)) {
             console.error(`Fetch Error: Invalid address format "${address}"`);
             return undefined;
         }
-        // RISC-V yêu cầu địa chỉ lệnh phải căn chỉnh.
-        // Đối với RV32I, lệnh dài 4 byte, nên địa chỉ phải chia hết cho 4.
-        // Việc kiểm tra căn chỉnh có thể được thực hiện ở đây hoặc bỏ qua cho simulator đơn giản.
-        // if (addrInt % 4 !== 0) {
-        //     throw new Error(`Instruction access fault: Address 0x${addrInt.toString(16)} is not 4-byte aligned.`);
-        // }
-
-        // Đọc 4 byte từ bộ nhớ (theo thứ tự little-endian)
-        const byte0 = this.memory[addrInt];        // Byte ở địa chỉ thấp nhất (LSB)
-        const byte1 = this.memory[addrInt + 1];
-        const byte2 = this.memory[addrInt + 2];
-        const byte3 = this.memory[addrInt + 3];    // Byte ở địa chỉ cao nhất (MSB)
-
-        // Kiểm tra xem tất cả các byte có tồn tại trong bộ nhớ không
-        if (byte0 === undefined || byte1 === undefined || byte2 === undefined || byte3 === undefined) {
-            console.error(`Fetch Error: Failed to fetch 4 bytes at address 0x${addrInt.toString(16)} (Memory out of bounds or not loaded).`);
-            // console.error(`Bytes found: [${byte0}, ${byte1}, ${byte2}, ${byte3}]`);
-            return undefined; // Trả về undefined nếu không đủ byte
+        try {
+            return this.tilelinkMem.readWord(addrInt);
+        } catch (e) {
+            console.error(e.message);
+            return undefined;
         }
-
-        // Kết hợp 4 byte thành một số nguyên 32-bit (little-endian: byte3 là MSB, byte0 là LSB)
-        const instruction = ((byte3 | 0) << 24) | ((byte2 | 0) << 16) | ((byte1 | 0) << 8) | (byte0 | 0);
-        return instruction; // Trả về từ lệnh 32-bit
     },
 
     // DECODE: Giải mã từ lệnh 32-bit thành các trường và tên lệnh
@@ -405,37 +371,23 @@ export const simulator = {
 
     // EXECUTE: Thực thi lệnh đã được giải mã
     execute(decoded) {
-        // Trích xuất các thành phần từ đối tượng decoded
         const { opName, type, rd, rs1, rs2, funct3, funct7, imm, rm } = decoded;
-
-        // Đọc giá trị từ thanh ghi nguồn (x0 luôn là 0)
-        // Dùng | 0 để đảm bảo kết quả là số nguyên 32-bit có dấu
-        const val1_int = (rs1 === 0 && type !== 'R-FP-CVT' && type !== 'FMV.W.X') ? 0 : (this.registers[rs1] | 0); // Giá trị từ thanh ghi số nguyên rs1
-        const val2_int = (rs2 === 0 && type !== 'R-FP-CVT') ? 0 : (this.registers[rs2] | 0); // Giá trị từ thanh ghi số nguyên rs2
-
-        // Đọc giá trị từ thanh ghi FP nguồn (f0-f31)
-        // Cần kiểm tra xem lệnh có dùng thanh ghi FP không
-        const val1_fp = this.fregisters[rs1]; // Giá trị từ thanh ghi FP rs1
-        const val2_fp = this.fregisters[rs2]; // Giá trị từ thanh ghi FP rs2
-
-        const pc = this.pc; // PC của lệnh hiện tại (dùng cho AUIPC, JAL, JALR, Branch)
-
-        let result_int = undefined;     // Kết quả số nguyên ghi vào thanh ghi integer rd
-        let result_fp = undefined;      // Kết quả float ghi vào thanh ghi FP rd
-        let memoryAddress = 0;          // Địa chỉ bộ nhớ cho lệnh load/store
-        let memoryValue = 0;            // Giá trị đọc/ghi từ/vào bộ nhớ
-        let branchTaken = false;        // Cờ cho biết nhánh có được thực hiện không
-        let nextPc = undefined;         // PC tiếp theo nếu có jump/branch
-
-        // Hằng số cho các trường hợp đặc biệt của phép chia/lấy dư
+        const val1_int = (rs1 === 0 && type !== 'R-FP-CVT' && type !== 'FMV.W.X') ? 0 : (this.registers[rs1] | 0);
+        const val2_int = (rs2 === 0 && type !== 'R-FP-CVT') ? 0 : (this.registers[rs2] | 0);
+        const val1_fp = this.fregisters[rs1];
+        const val2_fp = this.fregisters[rs2];
+        const pc = this.pc;
+        let result_int = undefined;
+        let result_fp = undefined;
+        let memoryAddress = 0;
+        let memoryValue = 0;
+        let branchTaken = false;
+        let nextPc = undefined;
         const INT32_MIN = -2147483648;
-        const UINT32_MAX_AS_SIGNED = -1; // Biểu diễn bit của 0xFFFFFFFF khi là số có dấu
+        const UINT32_MAX_AS_SIGNED = -1;
 
-        // console.log(`  Executing: ${opName} rd=${rd}, rs1=${rs1}, rs2=${rs2}, imm=${imm}, rm=${rm}`);
-
-        // Thực thi dựa trên tên lệnh (opName)
         switch (opName) {
-            // --- RV32I & RV32M (Integer and Multiply/Divide) ---
+            // --- Integer & Mul/Div ---
             case 'ADD': result_int = (val1_int + val2_int) | 0; break;
             case 'SUB': result_int = (val1_int - val2_int) | 0; break;
             case 'SLL': result_int = (val1_int << (val2_int & 0x1F)) | 0; break;
@@ -474,56 +426,52 @@ export const simulator = {
             case 'XORI': result_int = (val1_int ^ imm) | 0; break;
             case 'ORI': result_int = (val1_int | imm) | 0; break;
             case 'ANDI': result_int = (val1_int & imm) | 0; break;
-            case 'SLLI': result_int = (val1_int << imm) | 0; break; // imm là shamt (0-31)
+            case 'SLLI': result_int = (val1_int << imm) | 0; break;
             case 'SRLI': result_int = val1_int >>> imm; break;
             case 'SRAI': result_int = val1_int >> imm; break;
             case 'LB':
-                memoryAddress = (val1_int + imm) | 0; memoryValue = this.memory[memoryAddress];
-                if (memoryValue === undefined) throw new Error(`Memory read error at 0x${memoryAddress.toString(16)}`);
-                result_int = (memoryValue & 0x80) ? (memoryValue | 0xFFFFFF00) : (memoryValue & 0xFF); // Sign-extend
+                memoryAddress = (val1_int + imm) | 0;
+                memoryValue = this.tilelinkMem.readByte(memoryAddress);
+                result_int = (memoryValue & 0x80) ? (memoryValue | 0xFFFFFF00) : (memoryValue & 0xFF);
                 break;
             case 'LH':
                 memoryAddress = (val1_int + imm) | 0;
-                const lh_b0 = this.memory[memoryAddress], lh_b1 = this.memory[memoryAddress + 1];
-                if (lh_b0 === undefined || lh_b1 === undefined) throw new Error(`Memory read error at 0x${memoryAddress.toString(16)}`);
-                memoryValue = (lh_b1 << 8) | lh_b0; // Little-endian
-                result_int = (memoryValue & 0x8000) ? (memoryValue | 0xFFFF0000) : (memoryValue & 0xFFFF); // Sign-extend
+                const lh_b0 = this.tilelinkMem.readByte(memoryAddress), lh_b1 = this.tilelinkMem.readByte(memoryAddress + 1);
+                memoryValue = (lh_b1 << 8) | lh_b0;
+                result_int = (memoryValue & 0x8000) ? (memoryValue | 0xFFFF0000) : (memoryValue & 0xFFFF);
                 break;
             case 'LW':
                 memoryAddress = (val1_int + imm) | 0;
-                const lw_b0 = this.memory[memoryAddress], lw_b1 = this.memory[memoryAddress + 1];
-                const lw_b2 = this.memory[memoryAddress + 2], lw_b3 = this.memory[memoryAddress + 3];
-                if (lw_b0 === undefined || lw_b1 === undefined || lw_b2 === undefined || lw_b3 === undefined) throw new Error(`Memory read error at 0x${memoryAddress.toString(16)}`);
-                result_int = (lw_b3 << 24) | (lw_b2 << 16) | (lw_b1 << 8) | lw_b0; // Little-endian
+                result_int = this.tilelinkMem.readWord(memoryAddress);
                 break;
             case 'LBU':
-                memoryAddress = (val1_int + imm) | 0; memoryValue = this.memory[memoryAddress];
-                if (memoryValue === undefined) throw new Error(`Memory read error at 0x${memoryAddress.toString(16)}`);
-                result_int = memoryValue & 0xFF; // Zero-extend
+                memoryAddress = (val1_int + imm) | 0;
+                memoryValue = this.tilelinkMem.readByte(memoryAddress);
+                result_int = memoryValue & 0xFF;
                 break;
             case 'LHU':
                 memoryAddress = (val1_int + imm) | 0;
-                const lhu_b0 = this.memory[memoryAddress], lhu_b1 = this.memory[memoryAddress + 1];
-                if (lhu_b0 === undefined || lhu_b1 === undefined) throw new Error(`Memory read error at 0x${memoryAddress.toString(16)}`);
-                memoryValue = (lhu_b1 << 8) | lhu_b0; // Little-endian
-                result_int = memoryValue & 0xFFFF; // Zero-extend
+                const lhu_b0 = this.tilelinkMem.readByte(memoryAddress), lhu_b1 = this.tilelinkMem.readByte(memoryAddress + 1);
+                memoryValue = (lhu_b1 << 8) | lhu_b0;
+                result_int = memoryValue & 0xFFFF;
                 break;
             case 'SB':
-                memoryAddress = (val1_int + imm) | 0; this.memory[memoryAddress] = val2_int & 0xFF;
+                memoryAddress = (val1_int + imm) | 0;
+                this.tilelinkMem.writeByte(memoryAddress, val2_int);
                 break;
             case 'SH':
                 memoryAddress = (val1_int + imm) | 0;
-                this.memory[memoryAddress] = val2_int & 0xFF; this.memory[memoryAddress + 1] = (val2_int >> 8) & 0xFF;
+                this.tilelinkMem.writeByte(memoryAddress, val2_int & 0xFF);
+                this.tilelinkMem.writeByte(memoryAddress + 1, (val2_int >> 8) & 0xFF);
                 break;
             case 'SW':
                 memoryAddress = (val1_int + imm) | 0;
-                this.memory[memoryAddress] = val2_int & 0xFF; this.memory[memoryAddress + 1] = (val2_int >> 8) & 0xFF;
-                this.memory[memoryAddress + 2] = (val2_int >> 16) & 0xFF; this.memory[memoryAddress + 3] = (val2_int >> 24) & 0xFF;
+                this.tilelinkMem.writeWord(memoryAddress, val2_int);
                 break;
             case 'LUI': result_int = imm; break;
             case 'AUIPC': result_int = (pc + imm) | 0; break;
             case 'JAL': result_int = pc + 4; nextPc = (pc + imm) | 0; break;
-            case 'JALR': result_int = pc + 4; nextPc = (val1_int + imm) & ~1; break; // LSB của target phải là 0
+            case 'JALR': result_int = pc + 4; nextPc = (val1_int + imm) & ~1; break;
             case 'BEQ': if (val1_int === val2_int) branchTaken = true; break;
             case 'BNE': if (val1_int !== val2_int) branchTaken = true; break;
             case 'BLT': if (val1_int < val2_int) branchTaken = true; break;
@@ -533,196 +481,160 @@ export const simulator = {
             case 'ECALL': this.handleSyscall(); break;
             case 'EBREAK': this.isRunning = false; throw new Error("EBREAK instruction encountered.");
 
-            // --- RV32F (Single-Precision Floating-Point) ---
-            case 'FLW': // Nạp word từ bộ nhớ vào thanh ghi FP
-                memoryAddress = (val1_int + imm) | 0; // val1_int là thanh ghi cơ sở (integer)
-                // Đọc 4 byte từ bộ nhớ
-                const flw_b0 = this.memory[memoryAddress]; const flw_b1 = this.memory[memoryAddress + 1];
-                const flw_b2 = this.memory[memoryAddress + 2]; const flw_b3 = this.memory[memoryAddress + 3];
-                if (flw_b0 === undefined || flw_b1 === undefined || flw_b2 === undefined || flw_b3 === undefined) {
-                    throw new Error(`FLW: Memory read error at 0x${memoryAddress.toString(16)}`);
-                }
-                // Ghép 4 byte thành một ArrayBuffer để dùng DataView
+            // --- RV32F ---
+            case 'FLW':
+                memoryAddress = (val1_int + imm) | 0;
+                const flw_b0 = this.tilelinkMem.readByte(memoryAddress);
+                const flw_b1 = this.tilelinkMem.readByte(memoryAddress + 1);
+                const flw_b2 = this.tilelinkMem.readByte(memoryAddress + 2);
+                const flw_b3 = this.tilelinkMem.readByte(memoryAddress + 3);
                 const flw_buffer = new ArrayBuffer(4);
                 const flw_view = new DataView(flw_buffer);
                 flw_view.setUint8(0, flw_b0); flw_view.setUint8(1, flw_b1);
                 flw_view.setUint8(2, flw_b2); flw_view.setUint8(3, flw_b3);
-                result_fp = flw_view.getFloat32(0, true); // true for little-endian
+                result_fp = flw_view.getFloat32(0, true);
                 break;
-
-            case 'FSW': // Lưu word từ thanh ghi FP vào bộ nhớ
-                memoryAddress = (val1_int + imm) | 0; // val1_int là thanh ghi cơ sở (integer)
-                const fsw_float_val = val2_fp;      // val2_fp là thanh ghi FP nguồn (f-register)
+            case 'FSW':
+                memoryAddress = (val1_int + imm) | 0;
+                const fsw_float_val = val2_fp;
                 const fsw_buffer = new ArrayBuffer(4);
                 const fsw_view = new DataView(fsw_buffer);
-                fsw_view.setFloat32(0, fsw_float_val, true); // true for little-endian
-                // Ghi 4 byte vào bộ nhớ
+                fsw_view.setFloat32(0, fsw_float_val, true);
                 for (let i = 0; i < 4; i++) {
-                    this.memory[memoryAddress + i] = fsw_view.getUint8(i);
+                    this.tilelinkMem.writeByte(memoryAddress + i, fsw_view.getUint8(i));
                 }
                 break;
-
-            case 'FADD.S': result_fp = val1_fp + val2_fp; break; // Phép cộng FP, kết quả tự làm tròn về single khi gán vào Float32Array
+            case 'FADD.S': result_fp = val1_fp + val2_fp; break;
             case 'FSUB.S': result_fp = val1_fp - val2_fp; break;
             case 'FMUL.S': result_fp = val1_fp * val2_fp; break;
             case 'FDIV.S':
-                if (val2_fp === 0.0) { // Chia cho 0
-                    result_fp = (val1_fp > 0.0 ? Infinity : (val1_fp < 0.0 ? -Infinity : NaN)); // Theo chuẩn IEEE 754
-                    // RISC-V spec có thể đặt cờ DZ (Divide by Zero) và trả về +/- Infinity.
-                    // Simpulator này có thể không quản lý cờ, chỉ trả về giá trị.
+                if (val2_fp === 0.0) {
+                    result_fp = (val1_fp > 0.0 ? Infinity : (val1_fp < 0.0 ? -Infinity : NaN));
                 } else {
                     result_fp = val1_fp / val2_fp;
                 }
                 break;
-
-            case 'FCVT.W.S': // Chuyển Float (trong f[rs1]) sang Signed Word (trong x[rd])
-                // rm (rounding mode) được lấy từ funct3 trong decode. Ví dụ 000=RNE, 001=RTZ
-                // JavaScript Math.round (RNE-ties away from zero), Math.trunc (RTZ)
+            case 'FCVT.W.S':
                 let rounded_w;
                 switch (rm) {
-                    case 0b000: rounded_w = Math.round(val1_fp); break; // RNE (JS Math.round là ties away from zero)
-                    case 0b001: rounded_w = Math.trunc(val1_fp); break; // RTZ
-                    // Cần thêm các rounding mode khác nếu muốn đầy đủ (RDN, RUP, RMM)
-                    default: rounded_w = Math.round(val1_fp); // Mặc định RNE
+                    case 0b000: rounded_w = Math.round(val1_fp); break;
+                    case 0b001: rounded_w = Math.trunc(val1_fp); break;
+                    default: rounded_w = Math.round(val1_fp);
                 }
-                // Kẹp giá trị trong khoảng Int32
-                if (isNaN(val1_fp) || val1_fp > 2147483647.0) rounded_w = 2147483647; // Positive overflow/NaN -> INT_MAX
-                else if (val1_fp < -2147483648.0) rounded_w = -2147483648; // Negative overflow -> INT_MIN
+                if (isNaN(val1_fp) || val1_fp > 2147483647.0) rounded_w = 2147483647;
+                else if (val1_fp < -2147483648.0) rounded_w = -2147483648;
                 result_int = rounded_w | 0;
                 break;
-
-            case 'FCVT.S.W': // Chuyển Signed Word (trong x[rs1]) sang Float (trong f[rd])
-                // rm (rounding mode) cũng có thể áp dụng nếu giá trị integer không thể biểu diễn chính xác
-                result_fp = Number(val1_int); // Chuyển đổi trực tiếp, JS Number là double, gán vào Float32Array sẽ làm tròn.
+            case 'FCVT.S.W':
+                result_fp = Number(val1_int);
                 break;
-            // Tạm thời chưa thêm FCVT.WU.S và FCVT.S.WU, chúng tương tự nhưng xử lý unsigned.
-
-            case 'FEQ.S': // rd(int) = (f[rs1] == f[rs2]) ? 1 : 0
-                // Xử lý NaN: so sánh với NaN luôn false (trừ !=)
+            case 'FEQ.S':
                 if (isNaN(val1_fp) || isNaN(val2_fp)) result_int = 0;
                 else result_int = (val1_fp === val2_fp) ? 1 : 0;
                 break;
-            case 'FLT.S': // rd(int) = (f[rs1] < f[rs2]) ? 1 : 0
+            case 'FLT.S':
                 if (isNaN(val1_fp) || isNaN(val2_fp)) result_int = 0;
                 else result_int = (val1_fp < val2_fp) ? 1 : 0;
                 break;
-            case 'FLE.S': // rd(int) = (f[rs1] <= f[rs2]) ? 1 : 0
+            case 'FLE.S':
                 if (isNaN(val1_fp) || isNaN(val2_fp)) result_int = 0;
                 else result_int = (val1_fp <= val2_fp) ? 1 : 0;
                 break;
-
-            case 'FMV.X.W': // Di chuyển bit pattern từ f[rs1] sang x[rd]
+            case 'FMV.X.W':
                 const fmvxw_buffer = new ArrayBuffer(4);
                 const fmvxw_view = new DataView(fmvxw_buffer);
-                fmvxw_view.setFloat32(0, val1_fp, true); // true for little-endian
-                result_int = fmvxw_view.getInt32(0, true); // Đọc lại dưới dạng Int32
+                fmvxw_view.setFloat32(0, val1_fp, true);
+                result_int = fmvxw_view.getInt32(0, true);
                 break;
-            case 'FMV.W.X': // Di chuyển bit pattern từ x[rs1] sang f[rd]
+            case 'FMV.W.X':
                 const fmvwx_buffer = new ArrayBuffer(4);
                 const fmvwx_view = new DataView(fmvwx_buffer);
-                fmvwx_view.setInt32(0, val1_int, true); // true for little-endian
-                result_fp = fmvwx_view.getFloat32(0, true); // Đọc lại dưới dạng Float32
+                fmvwx_view.setInt32(0, val1_int, true);
+                result_fp = fmvwx_view.getFloat32(0, true);
                 break;
-
             default:
-                // console.error(`Execute: Instruction ${opName} (Type: ${type}) not implemented yet.`);
                 throw new Error(`Execute: Instruction ${opName} (Type: ${type}) is not implemented in the simulator.`);
         }
 
-        // Ghi kết quả vào thanh ghi đích (nếu có)
-        // Thanh ghi x0 luôn là 0 và không được ghi đè
         if (rd !== 0) {
-            if (result_int !== undefined) { // Nếu kết quả là cho thanh ghi số nguyên
-                this.registers[rd] = result_int | 0; // Đảm bảo ghi giá trị 32-bit có dấu
+            if (result_int !== undefined) {
+                this.registers[rd] = result_int | 0;
             }
-            if (result_fp !== undefined) { // Nếu kết quả là cho thanh ghi FP
-                this.fregisters[rd] = result_fp; // Gán trực tiếp, Float32Array sẽ xử lý
+            if (result_fp !== undefined) {
+                this.fregisters[rd] = result_fp;
             }
-        } else if (rd === 0 && (result_int !== undefined && result_int !== 0) ) {
-            // console.log(`Attempted to write value ${result_int} to x0 (zero register). Write ignored.`);
-        } else if (rd === 0 && (result_fp !== undefined && result_fp !== 0.0) ) {
-            // console.log(`Attempted to write value ${result_fp} to f0 (if f0 treated as x0). Write to actual f0 if distinct.`);
-            // Hiện tại, các lệnh FP được thiết kế để rd có thể là f0.
-            // Nếu có quy tắc f0 luôn là 0.0 thì cần xử lý ở đây. RISC-V không quy định f0 luôn là 0.
-            if (result_fp !== undefined) this.fregisters[rd] = result_fp; // Cho phép ghi vào f0
+        } else if (rd === 0 && (result_int !== undefined && result_int !== 0)) {
+            // Ignore write to x0
+        } else if (rd === 0 && (result_fp !== undefined && result_fp !== 0.0)) {
+            this.fregisters[rd] = result_fp;
         }
 
-
-        // Xử lý PC cho lệnh Branch sau khi tính toán branchTaken
         if (type === 'B' && branchTaken) {
-            nextPc = (pc + imm) | 0; // Tính địa chỉ rẽ nhánh nếu điều kiện đúng
+            nextPc = (pc + imm) | 0;
         }
-        // console.log("--- End Execute ---");
-        return { nextPc }; // Trả về đối tượng chứa nextPc (có thể là undefined nếu không phải jump/branch)
+        return { nextPc };
     },
 
-    // Xử lý các System Call (ECALL)
+    // --- System Call: dùng tilelinkMem ---
     handleSyscall() {
-        const syscallId = this.registers[17]; // Thanh ghi a7 (x17) chứa mã syscall
-        const arg0 = this.registers[10];      // Thanh ghi a0 (x10) chứa tham số thứ nhất
-        const arg1 = this.registers[11];      // Thanh ghi a1 (x11) chứa tham số thứ hai
-        const arg2 = this.registers[12];      // Thanh ghi a2 (x12) chứa tham số thứ ba
-        // console.log(`Syscall requested: ID = ${syscallId} (a7), Arg0 = ${arg0} (a0), Arg1 = ${arg1} (a1), Arg2 = ${arg2} (a2)`);
+        const syscallId = this.registers[17];
+        const arg0 = this.registers[10];
+        const arg1 = this.registers[11];
+        const arg2 = this.registers[12];
 
         switch (syscallId) {
-            case 93: // exit (theo quy ước Linux RISC-V)
-                // console.log(`>>> Syscall exit(${arg0}) called. Halting simulation.`);
-                this.isRunning = false; // Dừng vòng lặp run của simulator
+            case 93:
+                this.isRunning = false;
                 alert(`Program exited with code: ${arg0}`);
-                if (this.registers[10] !== undefined) this.registers[10] = arg0; // Chuẩn là a0 chứa exit code
+                if (this.registers[10] !== undefined) this.registers[10] = arg0;
                 break;
-            case 1: // print_int (theo quy ước RARS/SPIM)
-                // console.log(`>>> Syscall print_int: ${arg0}`);
+            case 1:
                 alert(`Print Int: ${arg0}`);
                 break;
-            case 4: // print_string (theo quy ước RARS/SPIM, a0 là địa chỉ chuỗi)
+            case 4:
                 let str = "";
                 let addr = arg0;
                 let charByte;
-                // console.log(`>>> Syscall print_string at address 0x${addr.toString(16)}`);
                 while (true) {
-                    charByte = this.memory[addr]; // Đọc từng byte từ bộ nhớ
-                    if (charByte === undefined || charByte === 0) break; // Kết thúc chuỗi (null-terminated) hoặc lỗi đọc
-                    str += String.fromCharCode(charByte); // Ghép ký tự
+                    try {
+                        charByte = this.tilelinkMem.readByte(addr);
+                    } catch {
+                        break;
+                    }
+                    if (charByte === 0) break;
+                    str += String.fromCharCode(charByte);
                     addr++;
-                    if (str.length > 1000) { // Giới hạn độ dài chuỗi để tránh treo
-                        // console.warn("Syscall print_string: String too long, truncated.");
+                    if (str.length > 1000) {
                         str += "... (truncated)";
                         break;
                     }
                 }
-                // console.log(`String content: "${str}"`);
                 alert(`Print String:\n${str}`);
                 break;
-            case 64: // write (theo quy ước Linux RISC-V: a0=fd, a1=buf_addr, a2=count)
+            case 64:
                 const fd_write = arg0;
                 const bufAddr_write = arg1;
                 const count_write = arg2;
-                if (fd_write === 1) { // fd 1 là stdout
+                if (fd_write === 1) {
                     let outputStr = "";
-                    // console.log(`>>> Syscall write(fd=1, buf=0x${bufAddr_write.toString(16)}, count=${count_write})`);
                     for (let i = 0; i < count_write; i++) {
-                        const byte = this.memory[bufAddr_write + i];
-                        if (byte === undefined) {
-                            // console.warn(`Syscall write: Read undefined byte at 0x${(bufAddr_write + i).toString(16)}`);
-                            this.registers[10] = i; // Trả về số byte đã ghi thành công vào a0
+                        let byte;
+                        try {
+                            byte = this.tilelinkMem.readByte(bufAddr_write + i);
+                        } catch {
+                            this.registers[10] = i;
                             return;
                         }
                         outputStr += String.fromCharCode(byte);
                     }
-                    // console.log(`Stdout content: "${outputStr}"`);
                     alert(`Write to stdout:\n${outputStr}`);
-                    this.registers[10] = outputStr.length; // Trả về số byte đã ghi vào a0
+                    this.registers[10] = outputStr.length;
                 } else {
-                    // console.warn(`Syscall write: Unsupported file descriptor ${fd_write}`);
-                    this.registers[10] = -1; // Trả về lỗi trong a0 (ví dụ -EBADF)
+                    this.registers[10] = -1;
                 }
                 break;
-            // Có thể thêm các syscall khác như read_int, sbrk, etc.
             default:
                 console.warn(`Unsupported syscall ID: ${syscallId}`);
-                // Theo quy ước, có thể trả về mã lỗi trong a0, ví dụ -ENOSYS (Function not implemented)
-                // this.registers[10] = -38; // Mã lỗi ENOSYS
         }
     }
 };

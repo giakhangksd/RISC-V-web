@@ -117,7 +117,13 @@ function renderDataSegmentTable() {
             // Đọc 4 byte cho mỗi word (little-endian)
             for (let k = 0; k < 4; k++) {
                 const byteAddr = wordStartAddress + k;
-                const byte = simulator.memory[byteAddr] ?? null; // Lấy byte từ memory, nếu không có thì là null
+                //const byte = simulator.tilelinkMem.readByte[byteAddr] ?? null; // Lấy byte từ memory, nếu không có thì là null
+                let byte;
+                try {
+                    byte = simulator.tilelinkMem.readByte(byteAddr);
+                } catch {
+                    byte = null;
+                }      
                 bytes.push(byte);
                 if (byte !== null) {
                     allBytesNull = false;
