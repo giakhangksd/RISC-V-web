@@ -318,7 +318,7 @@ class TileLinkCPU {
     }
 
     // EXECUTE: Thực thi lệnh đã được giải mã
-    execute(decoded) {
+    execute(decoded, bus) {
             // Đảm bảo this.memory luôn trỏ đến simulator.mem.mem
         if (typeof simulator !== "undefined" && simulator.mem && simulator.mem.mem) {
             this.memory = simulator.mem.mem;
@@ -407,12 +407,33 @@ class TileLinkCPU {
                 memoryValue = (lh_b1 << 8) | lh_b0; // Little-endian
                 result_int = (memoryValue & 0x8000) ? (memoryValue | 0xFFFF0000) : (memoryValue & 0xFFFF); // Sign-extend
                 break;
+            // case 'LW':
+            //     memoryAddress = (val1_int + imm) | 0;
+            //     const lw_b0 = this.memory[memoryAddress], lw_b1 = this.memory[memoryAddress + 1];
+            //     const lw_b2 = this.memory[memoryAddress + 2], lw_b3 = this.memory[memoryAddress + 3];
+            //     if (lw_b0 === undefined || lw_b1 === undefined || lw_b2 === undefined || lw_b3 === undefined) throw new Error(`Memory read error at 0x${memoryAddress.toString(16)}`);
+            //     result_int = (lw_b3 << 24) | (lw_b2 << 16) | (lw_b1 << 8) | lw_b0; // Little-endian
+            //     break;
             case 'LW':
                 memoryAddress = (val1_int + imm) | 0;
-                const lw_b0 = this.memory[memoryAddress], lw_b1 = this.memory[memoryAddress + 1];
-                const lw_b2 = this.memory[memoryAddress + 2], lw_b3 = this.memory[memoryAddress + 3];
-                if (lw_b0 === undefined || lw_b1 === undefined || lw_b2 === undefined || lw_b3 === undefined) throw new Error(`Memory read error at 0x${memoryAddress.toString(16)}`);
-                result_int = (lw_b3 << 24) | (lw_b2 << 16) | (lw_b1 << 8) | lw_b0; // Little-endian
+                if (!this.waitingRequest && !this.pendingResponse) {
+                    // Gửi request đọc word qua bus
+                    this.readWordAsync(memoryAddress, bus);
+                    // Đợi response, không tăng PC, không thực hiện gì thêm
+                    return { nextPc: this.pc };
+                }  
+                if (this.pendingResponse) {
+                    result_int = this.pendingResponse.data;
+                    this.waitingRequest = null;
+                    this.pendingResponse = null;
+                    // GHI GIÁ TRỊ VÀO THANH GHI ĐÍCH Ở ĐÂY
+                    if (rd !== 0) this.registers[rd] = result_int | 0;
+                    console.log(`[CPU] LW response: PC=0x${this.pc.toString(16)}, rd=x${rd}, value=${result_int|0}`);
+                    return {}; // Đã xử lý xong, tick sẽ tự tăng PC
+                } else {
+                    // Chưa có response, tiếp tục đợi
+                    return { nextPc: this.pc };
+                }
                 break;
             case 'LBU':
                 memoryAddress = (val1_int + imm) | 0; memoryValue = this.memory[memoryAddress];
@@ -433,10 +454,29 @@ class TileLinkCPU {
                 memoryAddress = (val1_int + imm) | 0;
                 this.memory[memoryAddress] = val2_int & 0xFF; this.memory[memoryAddress + 1] = (val2_int >> 8) & 0xFF;
                 break;
+            // case 'SW':
+            //     memoryAddress = (val1_int + imm) | 0;
+            //     this.memory[memoryAddress] = val2_int & 0xFF; this.memory[memoryAddress + 1] = (val2_int >> 8) & 0xFF;
+            //     this.memory[memoryAddress + 2] = (val2_int >> 16) & 0xFF; this.memory[memoryAddress + 3] = (val2_int >> 24) & 0xFF;
+            //     break;
             case 'SW':
                 memoryAddress = (val1_int + imm) | 0;
-                this.memory[memoryAddress] = val2_int & 0xFF; this.memory[memoryAddress + 1] = (val2_int >> 8) & 0xFF;
-                this.memory[memoryAddress + 2] = (val2_int >> 16) & 0xFF; this.memory[memoryAddress + 3] = (val2_int >> 24) & 0xFF;
+                if (!this.waitingRequest && !this.pendingResponse) {
+                    // Gửi request ghi word qua bus
+                    this.writeWordAsync(memoryAddress, val2_int, bus);
+                    // Đợi response, không tăng PC, không thực hiện gì thêm
+                    return { nextPc: this.pc };
+                }
+                if (this.pendingResponse) {
+                   // Đã ghi xong
+                    this.waitingRequest = null;
+                    this.pendingResponse = null;
+                    console.log(`[CPU] SW response: PC=0x${this.pc.toString(16)}`);
+                    return {};
+                } else {
+                    // Chưa có response, tiếp tục đợi
+                    return { nextPc: this.pc };
+                }
                 break;
             case 'LUI': result_int = imm; break;
             case 'AUIPC': result_int = (pc + imm) | 0; break;
@@ -646,16 +686,21 @@ class TileLinkCPU {
 
     tick(bus) {
         // Nếu đang chờ response từ bus
-        if (this.waitingRequest && this.pendingResponse) {
-            if (this.resolve) this.resolve(this.pendingResponse.data);
-            this.waitingRequest = null;
-            this.pendingResponse = null;
-            this.resolve = null;
-            
+        // if (this.waitingRequest && this.pendingResponse) {
+        //     if (this.resolve) this.resolve(this.pendingResponse.data);
+        //     this.waitingRequest = null;
+        //     this.pendingResponse = null;
+        //     this.resolve = null;   
+        // }
+            // Nếu vẫn đang chờ response thì không thực thi lệnh mới
+        if (this.waitingRequest && !this.pendingResponse) {
+            return;
         }
+        // Lưu lại PC cũ để so sánh
+        const oldPc = this.pc;
 
         // Thực thi lệnh nếu không chờ bus
-    // Giả sử simulator.mem là TileLinkULMemory
+
         const mem = (typeof simulator !== "undefined" && simulator.mem && simulator.mem.mem)
         ? simulator.mem.mem: this.memory;
         const pc = this.pc;
@@ -667,7 +712,7 @@ class TileLinkCPU {
 
         // Giải mã và thực thi lệnh
         const decoded = this.decode(inst);
-        const { nextPc } = this.execute(decoded);
+        const { nextPc } = this.execute(decoded, bus);
 
         // Cập nhật PC
         if (nextPc !== undefined) {
@@ -675,70 +720,40 @@ class TileLinkCPU {
         } else {
             this.pc += 4;
         }
+        // GHI LOG mỗi lần tick thực sự tăng PC
+        if (this.pc !== oldPc) {
+        console.log(`[CPU] PC: 0x${oldPc.toString(16)} -> 0x${this.pc.toString(16)}, Executed: ${decoded.opName}`);
+        }
     }
 
     receiveResponse(resp) {
-        this.pendingResponse = resp;
-    }
-    // Ví dụ: gửi request đọc word
+    this.pendingResponse = resp;
+}
+
+    // Gửi request đọc word
     readWordAsync(address, bus) {
-        return new Promise((resolve) => {
-            this.waitingRequest = { type: 'read', address: address | 0 };
-            this.resolve = resolve;
-            bus.sendRequest(this.waitingRequest);
-        });
+        this.waitingRequest = { type: 'read', address: address | 0 };
+        bus.sendRequest(this.waitingRequest);
     }
+
     // Gửi request đọc byte
     readByteAsync(address, bus) {
-        return new Promise((resolve) => {
-            this.waitingRequest = { type: 'readByte', address: address | 0 };
-            this.resolve = resolve;
-            bus.sendRequest(this.waitingRequest);
-        });
+        this.waitingRequest = { type: 'readByte', address: address | 0 };
+        bus.sendRequest(this.waitingRequest);
     }
 
     // Gửi request ghi word
     writeWordAsync(address, value, bus) {
-        return new Promise((resolve) => {
-            this.waitingRequest = { type: 'write', address: address | 0, value };
-            this.resolve = resolve;
-            bus.sendRequest(this.waitingRequest);
-        });
+        this.waitingRequest = { type: 'write', address: address | 0, value };
+        bus.sendRequest(this.waitingRequest);
     }
 
     // Gửi request ghi byte
     writeByteAsync(address, value, bus) {
-        return new Promise((resolve) => {
-            this.waitingRequest = { type: 'writeByte', address: address | 0, value };
-            this.resolve = resolve;
-            bus.sendRequest(this.waitingRequest);
-        });
+        this.waitingRequest = { type: 'writeByte', address: address | 0, value };
+        bus.sendRequest(this.waitingRequest);
     }
 }
-// // --- Simulator tổng ---
-// export class TileLinkSimulator {
-//     constructor() {
-//         this.cpu = new TileLinkCPU();
-//         this.bus = new TileLinkBus();
-//         this.mem = new TileLinkULMemory();
-//         this.cycleCount = 0;
-//     }
-//     tick() {
-//         this.cpu.tick(this.bus);
-//         this.bus.tick(this.cpu, this.mem);
-//         this.mem.tick(this.bus);
-//         this.cycleCount++;
-//     }
-//     reset() {
-//         this.cpu.reset();
-//         this.mem.reset();
-//         this.cycleCount = 0;
-//     }
-//     loadProgram(programData) {
-//         this.cpu.loadProgram(programData, this.mem);
-//     }
-// }
-
 
 // --- Simulator ---
 export const simulator = {
@@ -757,15 +772,29 @@ export const simulator = {
     },
     loadProgram(programData) {
         this.cpu.loadProgram(programData, this.mem);
+        this.cpu.isRunning = true;
     },
     tick() {
+        if (this.cpu.isRunning === false) {
+            console.log("Simulation halted.");
+            return;
+        }
         this.cpu.tick(this.bus);
+        console.log(`[Cycle ${this.cycleCount + 1}] BUS request:`, this.bus.request, "BUS response:", this.bus.response);
         this.bus.tick(this.cpu, this.mem);
+        console.log(`[Cycle ${this.cycleCount + 1}] MEM pendingRequest:`, this.mem.pendingRequest);
         this.mem.tick(this.bus);
+        console.log(`[Cycle ${this.cycleCount + 1}] CPU waitingRequest:`, this.cpu.waitingRequest, "CPU pendingResponse:", this.cpu.pendingResponse);
         this.cycleCount++;
-        //if (typeof updateUIGlobally === "function") updateUIGlobally();
-        //console.log(Array.from(simulator.cpu.registers));
     }
+    // tick() {
+    //     this.cpu.tick(this.bus);
+    //     this.bus.tick(this.cpu, this.mem);
+    //     this.mem.tick(this.bus);
+    //     this.cycleCount++;
+    //     //if (typeof updateUIGlobally === "function") updateUIGlobally();
+    //     //console.log(Array.from(simulator.cpu.registers));
+    // }
 };
 
 simulator.reset();
