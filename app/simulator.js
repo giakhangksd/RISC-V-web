@@ -685,13 +685,6 @@ class TileLinkCPU {
     }
 
     tick(bus) {
-        // Nếu đang chờ response từ bus
-        // if (this.waitingRequest && this.pendingResponse) {
-        //     if (this.resolve) this.resolve(this.pendingResponse.data);
-        //     this.waitingRequest = null;
-        //     this.pendingResponse = null;
-        //     this.resolve = null;   
-        // }
             // Nếu vẫn đang chờ response thì không thực thi lệnh mới
         if (this.waitingRequest && !this.pendingResponse) {
             return;
@@ -787,14 +780,6 @@ export const simulator = {
         console.log(`[Cycle ${this.cycleCount + 1}] CPU waitingRequest:`, this.cpu.waitingRequest, "CPU pendingResponse:", this.cpu.pendingResponse);
         this.cycleCount++;
     }
-    // tick() {
-    //     this.cpu.tick(this.bus);
-    //     this.bus.tick(this.cpu, this.mem);
-    //     this.mem.tick(this.bus);
-    //     this.cycleCount++;
-    //     //if (typeof updateUIGlobally === "function") updateUIGlobally();
-    //     //console.log(Array.from(simulator.cpu.registers));
-    // }
 };
 
 simulator.reset();
