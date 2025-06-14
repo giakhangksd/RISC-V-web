@@ -156,13 +156,12 @@ function renderDataSegmentTable() {
 // Cập nhật toàn bộ giao diện người dùng với trạng thái hiện tại của simulator
 function updateUIGlobally() {
     const currentSimulator = simulator; // Tham chiếu đến đối tượng simulator
-
     // Cập nhật bảng thanh ghi số nguyên (x0-x31 và PC)
     if (registerTableBody) {
         for (let i = 0; i < 32; i++) { // Cập nhật x0-x31
             const row = document.getElementById(`reg-${i}`);
             if (row && row.cells.length >= 2) { // Đảm bảo hàng và ô tồn tại
-                const value = currentSimulator.registers[i]; // Lấy giá trị từ simulator
+                const value = currentSimulator.cpu.registers[i]; // Lấy giá trị từ simulator
                 const cells = row.cells;
                 const oldValueHex = cells[1].textContent; // Giá trị Hex cũ trong ô
                 const newValueHex = `0x${(value >>> 0).toString(16).padStart(8, '0')}`; // Giá trị Hex mới
@@ -178,7 +177,7 @@ function updateUIGlobally() {
         }
         const pcRowElement = document.getElementById('reg-pc'); // Cập nhật PC
         if (pcRowElement && pcRowElement.cells.length >= 2) {
-            const pcValue = currentSimulator.pc;
+            const pcValue = currentSimulator.cpu.pc; // Sửa lại dòng này
             const cells = pcRowElement.cells;
             const oldPcHex = cells[1].textContent;
             const newPcHex = `0x${(pcValue >>> 0).toString(16).padStart(8, '0')}`;
@@ -193,11 +192,11 @@ function updateUIGlobally() {
     }
 
     // Cập nhật bảng thanh ghi điểm động (f0-f31)
-    if (fpRegisterTableBody && currentSimulator.fregisters) {
+    if (fpRegisterTableBody && currentSimulator.cpu && currentSimulator.cpu.fregisters) {
         for (let i = 0; i < 32; i++) {
             const row = document.getElementById(`freg-${i}`);
             if (row && row.cells.length >= 3) { // Bảng FP có 3 cột
-                const floatValue = currentSimulator.fregisters[i]; // Giá trị float từ simulator
+                const floatValue = currentSimulator.cpu.fregisters[i]; // Giá trị float từ simulator
                 const cells = row.cells;
 
                 // Chuyển đổi bit pattern của floatValue sang dạng hex
@@ -243,7 +242,7 @@ function handleAssemble() {
     if (dataSegmentBody) dataSegmentBody.innerHTML = '<tr><td colspan="9">Resetting simulator...</td></tr>';
 
     simulator.reset();      // Reset trạng thái simulator (bao gồm cả thanh ghi FP nếu có)
-    updateUIGlobally();     // Cập nhật UI để hiển thị trạng thái đã reset (các thanh ghi về 0)
+    //updateUIGlobally();     // Cập nhật UI để hiển thị trạng thái đã reset (các thanh ghi về 0)
 
     // Dùng setTimeout để UI có thời gian cập nhật trước khi thực hiện tác vụ nặng (assemble)
     setTimeout(() => {
@@ -299,12 +298,16 @@ function handleAssemble() {
             // Tùy chọn: Thực thi lệnh đầu tiên ngay sau khi assemble
             if (programData.instructions && programData.instructions.length > 0) {
                 try {
-                    simulator.step(); // simulator.step() sẽ tự gọi updateUIGlobally()
+                    simulator.tick();
+                    updateUIGlobally();
                 } catch (stepError) {
                     console.error("Error during initial step execution:", stepError);
                     binaryOutput.textContent += `\n\nError during initial step: ${stepError.message}`;
                     updateUIGlobally(); // Cập nhật UI nếu có lỗi ở bước đầu
                 }
+            }else {
+                // Nếu không có lệnh nào, chỉ cập nhật UI về 0
+                updateUIGlobally();
             }
 
         } catch (error) { // Bắt lỗi từ quá trình assemble hoặc load
@@ -317,6 +320,7 @@ function handleAssemble() {
             initializeFPRegisterTable(); 
             const pcRow = document.getElementById('reg-pc');
             if(pcRow && pcRow.cells.length > 1) pcRow.cells[1].textContent = '0x00000000'; // Đảm bảo ô giá trị PC tồn tại
+            updateUIGlobally(); // <-- Thêm dòng này để UI luôn đồng bộ sau khi bắt lỗi
         }
     }, 10); // Độ trễ nhỏ để UI kịp cập nhật
 }
@@ -324,21 +328,32 @@ function handleAssemble() {
 // Xử lý sự kiện khi nhấn nút "Run"
 function handleRun() {
     if (!simulator) return;
-    binaryOutput.textContent += "\n\n--- Running ---"; // Thêm thông báo vào output
-    try {
-        simulator.run(); // Bắt đầu chạy chương trình trong simulator
-    } catch (e) {
-        console.error("Error starting run:", e);
-        alert(`Error starting run: ${e.message}`);
-        updateUIGlobally(); // Cập nhật UI nếu có lỗi khi bắt đầu chạy
+    binaryOutput.textContent += "\n\n--- Running ---";
+
+    let running = true;
+    function runLoop() {
+        if (!running) return;
+        try {
+            simulator.tick();
+            updateUIGlobally();
+            setTimeout(runLoop, 0);
+        } catch (e) {
+            running = false;
+            console.error("Error during run:", e);
+            binaryOutput.textContent += `\n\nRun Error: ${e.message}`;
+            updateUIGlobally();
+        }
     }
+    running = true;
+    runLoop();
 }
 
 // Xử lý sự kiện khi nhấn nút "Step"
 function handleStep() {
     if (!simulator) return;
     try {
-        simulator.step(); // Thực thi một lệnh trong simulator
+        simulator.tick();
+        updateUIGlobally();
     } catch (e) {
         console.error("Error during step:", e);
         const currentBinaryOutput = binaryOutput.textContent.split('\n\nStep Error:')[0]; // Tránh lặp lại thông báo lỗi cũ
@@ -351,7 +366,6 @@ function handleStep() {
 function handleReset() {
     if (!simulator || !instructionInput || !binaryOutput || !dataSegmentBody) return;
 
-    simulator.stop();    // Dừng simulator nếu đang chạy
     simulator.reset();   // Reset trạng thái của simulator (thanh ghi, bộ nhớ, PC)
 
     // Xóa các ô input và output
