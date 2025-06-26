@@ -7,15 +7,15 @@ class TileLinkBus {
         this.request = null;
         this.response = null;
     }
-    tick(cpu, mem) {
-        // Nếu có request từ CPU, chuyển sang MEM
+    tick(master, slave) {
+        // Nếu có request từ master, chuyển sang slaveslave
         if (this.request && !this.response) {
-            mem.receiveRequest(this.request);
+            slave.receiveRequest(this.request);
             this.request = null;
         }
-        // Nếu có response từ MEM, chuyển về CPU
+        // Nếu có response từ slave, chuyển về mastermaster
         if (this.response) {
-            cpu.receiveResponse(this.response);
+            master.receiveResponse(this.response);
             this.response = null;
         }
     }
@@ -38,27 +38,31 @@ class TileLinkULMemory {
     }
     tick(bus) {
         if (this.pendingRequest) {
-            let data = null;
+            let resp = null;
             if (this.pendingRequest.type === 'read') {
-                data =
+                const data =
                     ((this.mem[this.pendingRequest.address + 3] ?? 0) << 24) |
                     ((this.mem[this.pendingRequest.address + 2] ?? 0) << 16) |
                     ((this.mem[this.pendingRequest.address + 1] ?? 0) << 8) |
                     (this.mem[this.pendingRequest.address] ?? 0);
+                resp = { type: 'AccessAckData', address: this.pendingRequest.address, data };
             } else if (this.pendingRequest.type === 'write') {
                 this.mem[this.pendingRequest.address] = this.pendingRequest.value & 0xFF;
                 this.mem[this.pendingRequest.address + 1] = (this.pendingRequest.value >> 8) & 0xFF;
                 this.mem[this.pendingRequest.address + 2] = (this.pendingRequest.value >> 16) & 0xFF;
                 this.mem[this.pendingRequest.address + 3] = (this.pendingRequest.value >> 24) & 0xFF;
+                resp = { type: 'AccessAck', address: this.pendingRequest.address };
             } else if (this.pendingRequest.type === 'readByte') {
-                data = this.mem[this.pendingRequest.address] ?? 0;
+                const data = this.mem[this.pendingRequest.address] ?? 0;
+                resp = { type: 'AccessAckData', address: this.pendingRequest.address, data };
             } else if (this.pendingRequest.type === 'writeByte') {
                 this.mem[this.pendingRequest.address] = this.pendingRequest.value & 0xFF;
+                resp = { type: 'AccessAck', address: this.pendingRequest.address };
             }
-            bus.sendResponse({ ...this.pendingRequest, data });
+            if (resp) bus.sendResponse(resp);
             this.pendingRequest = null;
         }
-    }
+}
     loadMemoryMap(memoryMap) {
         this.mem = { ...memoryMap };
     }
@@ -753,14 +757,14 @@ export const simulator = {
     cpu: null,
     bus: null,
     mem: null,
-    tilelinkMem: null, // Để tương thích với code cũ
+    tilelinkMem: null, 
     cycleCount: 0,
 
     reset() {
         this.cpu = new TileLinkCPU();
         this.bus = new TileLinkBus();
         this.mem = new TileLinkULMemory();
-        this.tilelinkMem = this.mem; // Cho phép code cũ truy cập simulator.tilelinkMem
+        this.tilelinkMem = this.mem; 
         this.cycleCount = 0;
     },
     loadProgram(programData) {
