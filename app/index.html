@@ -1,88 +1,136 @@
 <!DOCTYPE html>
 <html lang="vi">
-
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RISC-V Assembler</title>
-    <link rel="stylesheet" href="style.css">
-</head>
+    <link rel="stylesheet" href="style.css" />
+  </head>
 
-<body>
+  <body>
     <h1>RISC-V Assembler</h1>
 
+    <!-- Bố cục chính 2 cột -->
     <div class="container">
-        <div class="column left-column">
-            <h2>Input your RISC-V code here:</h2>
-            <textarea id="instructionInput" placeholder="Enter RISC-V assembly code"></textarea>
-
-            <div class="controls">
-                <button id="assembleButton">Assemble</button>
-                <button id="runButton">Run</button>
-                <button id="stepButton">Step</button>
-                <button id="resetButton">Reset</button>
-            </div>
-
-            <h2>Binary Output:</h2>
-            <pre id="binaryOutput"></pre>
+      <!-- Cột trái: Input code, controls, binary output -->
+      <div class="column left-column">
+        <h2>Input your RISC-V code here:</h2>
+        <div id="editor-container">
+          <div id="lineNumberGutter"></div>
+          <textarea
+            id="instructionInput"
+            placeholder="Enter RISC-V assembly code"
+            wrap="off"
+            spellcheck="false"
+          ></textarea>
         </div>
 
-        <div class="column right-column">
-            <div class="register-view-toggle">
-                <button id="toggleRegisterViewButton">View Floating-Point Registers</button>
-            </div>
-
-            <table id="registerTable" class="register-display-table active-table">
-                <thead>
-                    <tr>
-                        <th>Name</th>  <th>Value</th> </tr>
-                </thead>
-                <tbody id="registerTableBody">
-                    </tbody>
-            </table>
-
-            <table id="fpRegisterTable" class="register-display-table">
-                <thead>
-                    <tr>
-                        <th>Register</th>    <th>Float Value</th> <th>Hex (Bits)</th>  </tr>
-                </thead>
-                <tbody id="fpRegisterTableBody">
-                    </tbody>
-            </table>
+        <div class="controls">
+          <button id="assembleButton">Assemble</button>
+          <button id="runButton">Run</button>
+          <button id="stepButton">Step</button>
+          <button id="resetButton">Reset</button>
         </div>
+
+        <h2>Binary Output:</h2>
+        <pre id="binaryOutput"></pre>
+      </div>
+
+      <!-- Cột phải: Bảng thanh ghi -->
+      <div class="column right-column">
+        <div class="register-view-toggle">
+          <button id="toggleRegisterViewButton">
+            View Floating-Point Registers
+          </button>
+        </div>
+
+        <!-- Bảng thanh ghi số nguyên -->
+        <table id="registerTable" class="register-display-table active-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Hex</th>
+              <th>Dec</th>
+            </tr>
+          </thead>
+          <tbody id="registerTableBody"></tbody>
+        </table>
+
+        <!-- Bảng thanh ghi dấu phẩy động -->
+        <table id="fpRegisterTable" class="register-display-table">
+          <thead>
+            <tr>
+              <th>Register</th>
+              <th>Float Value</th>
+              <th>Hex (Bits)</th>
+            </tr>
+          </thead>
+          <tbody id="fpRegisterTableBody"></tbody>
+        </table>
+      </div>
     </div>
 
+    <!-- Bảng hiển thị bộ nhớ lệnh (Instruction Memory) -->
+    <div class="instruction-view-container">
+      <h2>Instruction Memory View</h2>
+      <div class="table-wrapper">
+        <table id="instructionViewTable">
+          <thead>
+            <tr>
+              <th>Bkpt</th>
+              <th>Address</th>
+              <th>Code</th>
+              <th>Basic</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody id="instructionViewBody">
+            <!-- Nội dung sẽ được tạo bởi JavaScript -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Bảng hiển thị bộ nhớ dữ liệu (Data Segment) -->
     <div class="data-segment-container">
-        <h2>Data Segment View</h2>
-        <div class="address-search">
-            <label for="dataSegmentAddressInput">Go to Address:</label>
-            <input type="text" id="dataSegmentAddressInput" placeholder="e.g., 0x10010000">
-            <button id="goToDataSegmentAddress">Go</button>
-            <button id="toggleDataSegmentMode" style="margin-left: 10px;">Toggle Hex/ASCII</button>
-        </div>
-        <div class="table-wrapper">
-            <table id="dataSegmentTable">
-                <thead>
-                    <tr>
-                        <th>Address</th>
-                        <th>Value (+0)</th>
-                        <th>Value (+4)</th>
-                        <th>Value (+8)</th>
-                        <th>Value (+c)</th>
-                        <th>Value (+10)</th>
-                        <th>Value (+14)</th>
-                        <th>Value (+18)</th>
-                        <th>Value (+1c)</th>
-                    </tr>
-                </thead>
-                <tbody id="dataSegmentBody">
-                    </tbody>
-            </table>
-        </div>
+      <h2>Data Segment View</h2>
+      <div class="address-search">
+        <label for="dataSegmentAddressInput">Go to Address:</label>
+        <input
+          type="text"
+          id="dataSegmentAddressInput"
+          placeholder="e.g., 0x10010000"
+        />
+        <button id="goToDataSegmentAddress">Go</button>
+        <button id="toggleDataSegmentMode" style="margin-left: 10px">
+          Toggle Hex/ASCII
+        </button>
+      </div>
+      <div class="table-wrapper">
+        <table id="dataSegmentTable">
+          <thead>
+            <tr>
+              <th>Address</th>
+              <th>Value (+0)</th>
+              <th>Value (+4)</th>
+              <th>Value (+8)</th>
+              <th>Value (+c)</th>
+              <th>Value (+10)</th>
+              <th>Value (+14)</th>
+              <th>Value (+18)</th>
+              <th>Value (+1c)</th>
+            </tr>
+          </thead>
+          <tbody id="dataSegmentBody">
+            <!-- Nội dung sẽ được tạo bởi JavaScript -->
+          </tbody>
+        </table>
+      </div>
     </div>
 
+    <!-- Các file script -->
     <script src="javascript.js" type="module"></script>
     <script src="assembler.js" type="module"></script>
     <script src="simulator.js" type="module"></script>
-</body>
+  </body>
 </html>

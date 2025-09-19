@@ -322,3 +322,121 @@ pre#binaryOutput {
 #dataSegmentTable th:first-child {
     z-index: 3;
 }
+
+/* ================================== */
+/* == ẨN DEBUG TOOLS == */
+/* ================================== */
+.debug-tools {
+    display: none;
+}
+
+/* ================================== */
+/* == TRÌNH SOẠN THẢO CODE CẢI TIẾN == */
+/* ================================== */
+
+#editor-container {
+    position: relative;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    height: 350px; /* Chiều cao cố định cho editor */
+    display: flex;
+    overflow: hidden; /* Ẩn các phần thừa */
+    margin-bottom: 15px;
+    background-color: #fff;
+}
+
+#lineNumberGutter {
+    width: 45px;
+    padding: 10px 0;
+    text-align: right;
+    font-family: monospace;
+    font-size: 1em;
+    line-height: 1.5;
+    color: #888;
+    background-color: #f1f3f5;
+    user-select: none; /* Không cho phép chọn văn bản số dòng */
+    border-right: 1px solid #ced4da;
+    overflow-y: hidden; /* Đồng bộ cuộn với textarea */
+}
+
+#lineNumberGutter .line-number {
+    display: block;
+    padding: 0 10px 0 0;
+    cursor: pointer; /* Biến con trỏ thành hình bàn tay */
+}
+
+/* Kiểu cho breakpoint khi được đặt */
+#lineNumberGutter .line-number.breakpoint {
+    background-color: #dc3545; /* Màu đỏ */
+    color: white;
+    font-weight: bold;
+}
+
+/* Ghi đè lên textarea cũ */
+textarea#instructionInput {
+    width: 100%;
+    height: 100%;
+    flex-grow: 1; /* Lấp đầy không gian còn lại */
+    margin-bottom: 0;
+    border: none; /* Bỏ border vì đã có ở container */
+    border-radius: 0;
+    resize: none; /* Tắt tính năng resize */
+    padding-left: 10px;
+    line-height: 1.5; /* Phải giống với line-height của gutter */
+    font-family: monospace;
+    background-color: transparent; /* Nền trong suốt để không che gutter khi cuộn ngang */
+    outline: none;
+}
+
+/* ================================== */
+/* == INSTRUCTION MEMORY VIEW      == */
+/* ================================== */
+
+.instruction-view-container {
+    margin-top: 30px;
+    padding: 20px;
+    background-color: #fff;
+    border-radius: 8px;
+    box-shadow: 0 3px 6px rgba(0, 0, 0, 0.1);
+    max-width: 1400px;
+    margin-left: auto;
+    margin-right: auto;
+    margin-bottom: 30px;
+}
+
+#instructionViewTable {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: monospace;
+    font-size: 0.9em;
+    white-space: pre; /* Giữ khoảng trắng */
+}
+
+#instructionViewTable th,
+#instructionViewTable td {
+    border: 1px solid #dee2e6;
+    padding: 7px 10px;
+    text-align: left;
+}
+
+#instructionViewTable th {
+    background-color: #f1f3f5;
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+/* Căn chỉnh cho các cột cụ thể */
+#instructionViewTable td:nth-child(1) { /* Cột Bkpt */
+    text-align: center;
+}
+#instructionViewTable td:nth-child(2), /* Cột Address */
+#instructionViewTable td:nth-child(3) { /* Cột Code */
+    font-family: monospace;
+}
+
+/* Style cho hàng được highlight khi PC trỏ tới */
+#instructionViewTable tr.pc-highlight td {
+    background-color: #cce5ff !important; /* Màu xanh nhạt */
+}

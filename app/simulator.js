@@ -7,15 +7,15 @@ class TileLinkBus {
         this.request = null;
         this.response = null;
     }
-    tick(master, slave) {
-        // Nếu có request từ master, chuyển sang slaveslave
+    tick(cpu, mem) {
+        // Nếu có request từ CPU, chuyển sang MEM
         if (this.request && !this.response) {
-            slave.receiveRequest(this.request);
+            mem.receiveRequest(this.request);
             this.request = null;
         }
-        // Nếu có response từ slave, chuyển về mastermaster
+        // Nếu có response từ MEM, chuyển về CPU
         if (this.response) {
-            master.receiveResponse(this.response);
+            cpu.receiveResponse(this.response);
             this.response = null;
         }
     }
@@ -38,31 +38,65 @@ class TileLinkULMemory {
     }
     tick(bus) {
         if (this.pendingRequest) {
-            let resp = null;
-            if (this.pendingRequest.type === 'read') {
-                const data =
+            let data = null;
+            // Nếu ghi vào địa chỉ điều khiển DMA (ví dụ 0xFF00)
+            if (this.pendingRequest.type === 'write' && this.pendingRequest.address === 0xFF00) {
+                // Giả sử value là packed: src(16bit) | dst(8bit) | length(8bit)
+                const value = this.pendingRequest.value;
+                const src = (value >> 16) & 0xFFFF;
+                const dst = (value >> 8) & 0xFF;
+                const length = value & 0xFF;
+                // Lưu thông tin DMA cho lần tick tiếp theo
+                this._pendingDMA = { src, dst, length };
+            } else if (this.pendingRequest.type === 'read') {
+                data =
                     ((this.mem[this.pendingRequest.address + 3] ?? 0) << 24) |
                     ((this.mem[this.pendingRequest.address + 2] ?? 0) << 16) |
                     ((this.mem[this.pendingRequest.address + 1] ?? 0) << 8) |
                     (this.mem[this.pendingRequest.address] ?? 0);
-                resp = { type: 'AccessAckData', address: this.pendingRequest.address, data };
             } else if (this.pendingRequest.type === 'write') {
-                this.mem[this.pendingRequest.address] = this.pendingRequest.value & 0xFF;
-                this.mem[this.pendingRequest.address + 1] = (this.pendingRequest.value >> 8) & 0xFF;
-                this.mem[this.pendingRequest.address + 2] = (this.pendingRequest.value >> 16) & 0xFF;
-                this.mem[this.pendingRequest.address + 3] = (this.pendingRequest.value >> 24) & 0xFF;
-                resp = { type: 'AccessAck', address: this.pendingRequest.address };
+                if (this.pendingRequest.address !== 0xFF00) {
+                    this.mem[this.pendingRequest.address] = this.pendingRequest.value & 0xFF;
+                    this.mem[this.pendingRequest.address + 1] = (this.pendingRequest.value >> 8) & 0xFF;
+                    this.mem[this.pendingRequest.address + 2] = (this.pendingRequest.value >> 16) & 0xFF;
+                    this.mem[this.pendingRequest.address + 3] = (this.pendingRequest.value >> 24) & 0xFF;
+                }
             } else if (this.pendingRequest.type === 'readByte') {
-                const data = this.mem[this.pendingRequest.address] ?? 0;
-                resp = { type: 'AccessAckData', address: this.pendingRequest.address, data };
+                data = this.mem[this.pendingRequest.address] ?? 0;
             } else if (this.pendingRequest.type === 'writeByte') {
                 this.mem[this.pendingRequest.address] = this.pendingRequest.value & 0xFF;
-                resp = { type: 'AccessAck', address: this.pendingRequest.address };
             }
-            if (resp) bus.sendResponse(resp);
+            bus.sendResponse({ ...this.pendingRequest, data });
             this.pendingRequest = null;
         }
-}
+        // CHỈ start DMA khi KHÔNG còn pendingRequest
+        if (!this.pendingRequest && this._pendingDMA && !simulator.cpu.waitingRequest && !simulator.cpu.pendingResponse) {
+            const { src, dst, length } = this._pendingDMA;
+            if (typeof simulator !== "undefined" && simulator.dma) {
+                for (let i = 0; i < length; i++) {
+                    const srcAddr = src + i;
+                    console.log(`[CHECK BEFORE DMA] src[0x${srcAddr.toString(16)}]=0x${(this.mem[srcAddr] ?? 0).toString(16)}`);
+                }
+                simulator.dma.start(src, dst, length, () => {
+                    console.log("DMA transfer completed!");
+                    for (let i = 0; i < length; i++) {
+                        const srcAddr = src + i;
+                        const dstAddr = dst + i;
+                        const srcVal = simulator.mem.mem[srcAddr];
+                        const dstVal = simulator.mem.mem[dstAddr];
+                        console.log(`Byte ${i}: src[0x${srcAddr.toString(16)}]=0x${(srcVal ?? 0).toString(16)}, dst[0x${dstAddr.toString(16)}]=0x${(dstVal ?? 0).toString(16)}`);
+                    }
+                    console.log("Kiểm tra trực tiếp vùng đích sau DMA:");
+                    for (let i = 0; i < length; i++) {
+                        const dstAddr = dst + i;
+                        console.log(`mem[0x${dstAddr.toString(16)}]=0x${(simulator.mem.mem[dstAddr] ?? 0).toString(16)}`);
+                    }
+                    simulator.cpu.isRunning = false;
+                });
+            }
+            this._pendingDMA = null;
+        }
+    }
     loadMemoryMap(memoryMap) {
         this.mem = { ...memoryMap };
     }
@@ -88,7 +122,7 @@ class TileLinkCPU {
     resetRegisters() {
         this.registers.fill(0);
         this.fregisters.fill(0.0);
-        this.pc = 0;
+        //this.pc = 0;
     }
     reset() {
         this.resetRegisters();
@@ -302,7 +336,8 @@ class TileLinkCPU {
                     break;
                 case "U":
                     // imm[31:12] được đặt vào thanh ghi, các bit thấp là 0
-                    imm = instructionWord & 0xFFFFF000;
+                    //imm = instructionWord & 0xFFFFF000;
+                    imm = instructionWord >>> 12;
                     break;
                 case "J":
                     // imm[20|10:1|11|19:12], nhân 2, mở rộng dấu
@@ -399,11 +434,32 @@ class TileLinkCPU {
             case 'SLLI': result_int = (val1_int << imm) | 0; break; // imm là shamt (0-31)
             case 'SRLI': result_int = val1_int >>> imm; break;
             case 'SRAI': result_int = val1_int >> imm; break;
+            // case 'LB':
+            //     memoryAddress = (val1_int + imm) | 0; memoryValue = this.memory[memoryAddress];
+            //     if (memoryValue === undefined) throw new Error(`Memory read error at 0x${memoryAddress.toString(16)}`);
+            //     result_int = (memoryValue & 0x80) ? (memoryValue | 0xFFFFFF00) : (memoryValue & 0xFF); // Sign-extend
+            //     break;
             case 'LB':
-                memoryAddress = (val1_int + imm) | 0; memoryValue = this.memory[memoryAddress];
-                if (memoryValue === undefined) throw new Error(`Memory read error at 0x${memoryAddress.toString(16)}`);
-                result_int = (memoryValue & 0x80) ? (memoryValue | 0xFFFFFF00) : (memoryValue & 0xFF); // Sign-extend
-                break;
+                memoryAddress = (val1_int + imm) | 0;
+                if (!this.waitingRequest && !this.pendingResponse) {
+                    // Gửi request đọc byte qua bus
+                    this.readByteAsync(memoryAddress, bus);
+                    return { nextPc: this.pc };
+                }
+                if (this.pendingResponse) {
+                    memoryValue = this.pendingResponse.data;
+                    this.waitingRequest = null;
+                    this.pendingResponse = null;
+                    // Sign-extend
+                    result_int = (memoryValue & 0x80) ? (memoryValue | 0xFFFFFF00) : (memoryValue & 0xFF);
+                    if (rd !== 0) this.registers[rd] = result_int | 0;
+                    console.log(`[CPU] LB response: PC=0x${this.pc.toString(16)}, rd=x${rd}, value=${result_int|0}`);
+                    return {};
+                } else {
+                    // Chưa có response, tiếp tục đợi
+                    return { nextPc: this.pc };
+                }
+            break;
             case 'LH':
                 memoryAddress = (val1_int + imm) | 0;
                 const lh_b0 = this.memory[memoryAddress], lh_b1 = this.memory[memoryAddress + 1];
@@ -411,13 +467,6 @@ class TileLinkCPU {
                 memoryValue = (lh_b1 << 8) | lh_b0; // Little-endian
                 result_int = (memoryValue & 0x8000) ? (memoryValue | 0xFFFF0000) : (memoryValue & 0xFFFF); // Sign-extend
                 break;
-            // case 'LW':
-            //     memoryAddress = (val1_int + imm) | 0;
-            //     const lw_b0 = this.memory[memoryAddress], lw_b1 = this.memory[memoryAddress + 1];
-            //     const lw_b2 = this.memory[memoryAddress + 2], lw_b3 = this.memory[memoryAddress + 3];
-            //     if (lw_b0 === undefined || lw_b1 === undefined || lw_b2 === undefined || lw_b3 === undefined) throw new Error(`Memory read error at 0x${memoryAddress.toString(16)}`);
-            //     result_int = (lw_b3 << 24) | (lw_b2 << 16) | (lw_b1 << 8) | lw_b0; // Little-endian
-            //     break;
             case 'LW':
                 memoryAddress = (val1_int + imm) | 0;
                 if (!this.waitingRequest && !this.pendingResponse) {
@@ -451,20 +500,40 @@ class TileLinkCPU {
                 memoryValue = (lhu_b1 << 8) | lhu_b0; // Little-endian
                 result_int = memoryValue & 0xFFFF; // Zero-extend
                 break;
+            // case 'SB':
+            //     memoryAddress = (val1_int + imm) | 0; this.memory[memoryAddress] = val2_int & 0xFF;
+            //     console.log(`[CPU] SB: Ghi value=0x${(val2_int & 0xFF).toString(16)} vào địa chỉ 0x${memoryAddress.toString(16)}`);
+            //     console.log(`[MEM] mem[0x100]=0x${(simulator.mem.mem[0x100] ?? 0).toString(16)}`);
+            //     break;
             case 'SB':
-                memoryAddress = (val1_int + imm) | 0; this.memory[memoryAddress] = val2_int & 0xFF;
-                break;
+                memoryAddress = (val1_int + imm) | 0;
+                if (!this.waitingRequest && !this.pendingResponse) {
+                    // Gửi request ghi byte qua bus
+                    this.writeByteAsync(memoryAddress, val2_int & 0xFF, bus);
+                    return { nextPc: this.pc };
+                }
+                if (this.pendingResponse) {
+                    // Đã ghi xong
+                    this.waitingRequest = null;
+                    this.pendingResponse = null;
+                    console.log(`[CPU] SB response: PC=0x${this.pc.toString(16)}`);
+                    return {};
+                } else {
+                    // Chưa có response, tiếp tục đợi
+                    return { nextPc: this.pc };
+                }
+            break;
             case 'SH':
                 memoryAddress = (val1_int + imm) | 0;
                 this.memory[memoryAddress] = val2_int & 0xFF; this.memory[memoryAddress + 1] = (val2_int >> 8) & 0xFF;
                 break;
-            // case 'SW':
-            //     memoryAddress = (val1_int + imm) | 0;
-            //     this.memory[memoryAddress] = val2_int & 0xFF; this.memory[memoryAddress + 1] = (val2_int >> 8) & 0xFF;
-            //     this.memory[memoryAddress + 2] = (val2_int >> 16) & 0xFF; this.memory[memoryAddress + 3] = (val2_int >> 24) & 0xFF;
-            //     break;
             case 'SW':
                 memoryAddress = (val1_int + imm) | 0;
+                console.log(`[CPU] SW: Ghi value=0x${val2_int.toString(16)} vào địa chỉ 0x${memoryAddress.toString(16)}`);
+                // Kiểm tra nếu SW ghi vào vùng nguồn DMA
+                if (memoryAddress >= 0x100 && memoryAddress < 0x104) {
+                    console.warn(`[CẢNH BÁO] SW đang ghi vào vùng nguồn DMA tại địa chỉ 0x${memoryAddress.toString(16)}!`);
+                }
                 if (!this.waitingRequest && !this.pendingResponse) {
                     // Gửi request ghi word qua bus
                     this.writeWordAsync(memoryAddress, val2_int, bus);
@@ -472,17 +541,18 @@ class TileLinkCPU {
                     return { nextPc: this.pc };
                 }
                 if (this.pendingResponse) {
-                   // Đã ghi xong
+                    // Đã ghi xong
                     this.waitingRequest = null;
                     this.pendingResponse = null;
                     console.log(`[CPU] SW response: PC=0x${this.pc.toString(16)}`);
-                    return {};
+                return {};
                 } else {
                     // Chưa có response, tiếp tục đợi
                     return { nextPc: this.pc };
                 }
                 break;
-            case 'LUI': result_int = imm; break;
+            case 'LUI': this.registers[decoded.rd] = decoded.imm << 12; break;
+            //case 'LUI': result_int = imm << 12; break;
             case 'AUIPC': result_int = (pc + imm) | 0; break;
             case 'JAL': result_int = pc + 4; nextPc = (pc + imm) | 0; break;
             case 'JALR': result_int = pc + 4; nextPc = (val1_int + imm) & ~1; break; // LSB của target phải là 0
@@ -620,73 +690,98 @@ class TileLinkCPU {
 
     // Xử lý các System Call (ECALL)
     handleSyscall() {
+        // Kiểm tra xem đang chạy trên trình duyệt hay Node.js
+        const isBrowser = typeof window !== 'undefined' && typeof window.document !== 'undefined';
+
         const syscallId = this.registers[17]; // Thanh ghi a7 (x17) chứa mã syscall
         const arg0 = this.registers[10];      // Thanh ghi a0 (x10) chứa tham số thứ nhất
         const arg1 = this.registers[11];      // Thanh ghi a1 (x11) chứa tham số thứ hai
         const arg2 = this.registers[12];      // Thanh ghi a2 (x12) chứa tham số thứ ba
-        // console.log(`Syscall requested: ID = ${syscallId} (a7), Arg0 = ${arg0} (a0), Arg1 = ${arg1} (a1), Arg2 = ${arg2} (a2)`);
 
         switch (syscallId) {
             case 93: // exit (theo quy ước Linux RISC-V)
-                // console.log(`>>> Syscall exit(${arg0}) called. Halting simulation.`);
                 this.isRunning = false; // Dừng vòng lặp run của simulator
-                alert(`Program exited with code: ${arg0}`);
-                if (this.registers[10] !== undefined) this.registers[10] = arg0; // Chuẩn là a0 chứa exit code
+                if (isBrowser) {
+                    alert(`Program exited with code: ${arg0}`);
+                } else {
+                    // In ra console cho kịch bản kiểm thử
+                    console.log(`\n[Syscall] Program exited with code: ${arg0}`);
+                }
+                // Giữ lại giá trị trả về trong thanh ghi a0
+                if (this.registers[10] !== undefined) this.registers[10] = arg0;
                 break;
+
             case 1: // print_int (theo quy ước RARS/SPIM)
-                // console.log(`>>> Syscall print_int: ${arg0}`);
-                alert(`Print Int: ${arg0}`);
+                if (isBrowser) {
+                    alert(`Print Int: ${arg0}`);
+                } else {
+                    console.log(`\n[Syscall] Print Int: ${arg0}`);
+                }
                 break;
+
             case 4: // print_string (theo quy ước RARS/SPIM, a0 là địa chỉ chuỗi)
                 let str = "";
                 let addr = arg0;
                 let charByte;
-                // console.log(`>>> Syscall print_string at address 0x${addr.toString(16)}`);
                 while (true) {
-                    charByte = this.memory[addr]; // Đọc từng byte từ bộ nhớ
-                    if (charByte === undefined || charByte === 0) break; // Kết thúc chuỗi (null-terminated) hoặc lỗi đọc
-                    str += String.fromCharCode(charByte); // Ghép ký tự
+                    charByte = this.memory[addr];
+                    if (charByte === undefined || charByte === 0) break;
+                    str += String.fromCharCode(charByte);
                     addr++;
-                    if (str.length > 1000) { // Giới hạn độ dài chuỗi để tránh treo
-                        // console.warn("Syscall print_string: String too long, truncated.");
+                    if (str.length > 1000) { // Giới hạn để tránh treo
                         str += "... (truncated)";
                         break;
                     }
                 }
-                // console.log(`String content: "${str}"`);
-                alert(`Print String:\n${str}`);
+                if (isBrowser) {
+                    alert(`Print String:\n${str}`);
+                } else {
+                    console.log(`\n[Syscall] Print String: ${str}`);
+                }
                 break;
+
             case 64: // write (theo quy ước Linux RISC-V: a0=fd, a1=buf_addr, a2=count)
                 const fd_write = arg0;
                 const bufAddr_write = arg1;
                 const count_write = arg2;
                 if (fd_write === 1) { // fd 1 là stdout
                     let outputStr = "";
-                    // console.log(`>>> Syscall write(fd=1, buf=0x${bufAddr_write.toString(16)}, count=${count_write})`);
                     for (let i = 0; i < count_write; i++) {
                         const byte = this.memory[bufAddr_write + i];
                         if (byte === undefined) {
-                            // console.warn(`Syscall write: Read undefined byte at 0x${(bufAddr_write + i).toString(16)}`);
-                            this.registers[10] = i; // Trả về số byte đã ghi thành công vào a0
+                            this.registers[10] = i; // Trả về số byte đã ghi thành công
                             return;
                         }
                         outputStr += String.fromCharCode(byte);
                     }
-                    // console.log(`Stdout content: "${outputStr}"`);
-                    alert(`Write to stdout:\n${outputStr}`);
-                    this.registers[10] = outputStr.length; // Trả về số byte đã ghi vào a0
+                    if (isBrowser) {
+                        alert(`Write to stdout:\n${outputStr}`);
+                    } else {
+                        console.log(`\n[Syscall] Write to stdout: ${outputStr}`);
+                    }
+                    this.registers[10] = outputStr.length; // Trả về số byte đã ghi
                 } else {
-                    // console.warn(`Syscall write: Unsupported file descriptor ${fd_write}`);
-                    this.registers[10] = -1; // Trả về lỗi trong a0 (ví dụ -EBADF)
+                    // Xử lý cho các file descriptor không được hỗ trợ
+                    const errorMsg = `Syscall write: Unsupported file descriptor ${fd_write}`;
+                    if (isBrowser) {
+                        alert(errorMsg);
+                    } else {
+                        console.warn(`\n[Syscall] ${errorMsg}`);
+                    }
+                    this.registers[10] = -1; // Trả về lỗi
                 }
                 break;
-            // Có thể thêm các syscall khác như read_int, sbrk, etc.
+
             default:
-                console.warn(`Unsupported syscall ID: ${syscallId}`);
-                // Theo quy ước, có thể trả về mã lỗi trong a0, ví dụ -ENOSYS (Function not implemented)
-                // this.registers[10] = -38; // Mã lỗi ENOSYS
+                const errorMsg = `Unsupported syscall ID: ${syscallId}`;
+                if (isBrowser) {
+                    alert(errorMsg);
+                } else {
+                    console.warn(`\n[Syscall] ${errorMsg}`);
+                }
         }
     }
+
 
     tick(bus) {
             // Nếu vẫn đang chờ response thì không thực thi lệnh mới
@@ -752,38 +847,137 @@ class TileLinkCPU {
     }
 }
 
+// --- DMA Controller ---
+class DMAController {
+    constructor(memory) {
+        this.memory = memory;
+        this.isBusy = false;
+        this.src = 0;
+        this.dst = 0;
+        this.length = 0;
+        this.progress = 0;
+        this.callback = null;
+    }
+
+    // Khởi động DMA copy từ src sang dst, length bytes
+    start(src, dst, length, callback) {
+        if (this.isBusy) throw new Error("DMA is busy!");
+        this.src = src | 0;
+        this.dst = dst | 0;
+        this.length = length | 0;
+        this.progress = 0;
+        this.isBusy = true;
+        this.callback = callback;
+    }
+
+    // Tick DMA: mỗi tick copy 1 byte (có thể tăng tốc nếu muốn)
+    tick() {
+        if (!this.isBusy) return;
+        if (this.progress < this.length) {
+            const srcAddr = this.src + this.progress;
+            const dstAddr = this.dst + this.progress;
+            this.memory[dstAddr] = this.memory[srcAddr] ?? 0;
+            console.log(`[DMA WRITE] mem[0x${dstAddr.toString(16)}]=0x${(this.memory[dstAddr] ?? 0).toString(16)} (src=0x${srcAddr.toString(16)}, val=0x${(this.memory[srcAddr] ?? 0).toString(16)})`);
+            this.progress++;
+            // Sửa log để hiện địa chỉ thực tế
+            console.log(`[DMA] src=0x${srcAddr.toString(16)}, dst=0x${dstAddr.toString(16)}, length=${this.length}, progress=${this.progress}/${this.length}, busy=${this.isBusy}`);
+        }
+        if (this.progress >= this.length) {
+            this.isBusy = false;
+            if (typeof this.callback === "function") this.callback();
+        }
+    }
+}
+
 // --- Simulator ---
 export const simulator = {
     cpu: null,
     bus: null,
     mem: null,
-    tilelinkMem: null, 
+    tilelinkMem: null, // Để tương thích với code cũ
+    dma: null, // Thêm DMA controller
     cycleCount: 0,
 
     reset() {
         this.cpu = new TileLinkCPU();
         this.bus = new TileLinkBus();
         this.mem = new TileLinkULMemory();
-        this.tilelinkMem = this.mem; 
+        this.tilelinkMem = this.mem; // Cho phép code cũ truy cập simulator.tilelinkMem
+        this.dma = new DMAController(this.mem.mem); // Khởi tạo DMA controller
         this.cycleCount = 0;
     },
     loadProgram(programData) {
         this.cpu.loadProgram(programData, this.mem);
         this.cpu.isRunning = true;
+        this.dma.memory = this.mem.mem; // Đảm bảo DMA dùng vùng nhớ mới nhất
     },
     tick() {
-        if (this.cpu.isRunning === false) {
+        // Nếu CPU dừng và DMA không chạy thì dừng hoàn toàn
+        if (this.cpu.isRunning === false && (!this.dma || !this.dma.isBusy)) {
             console.log("Simulation halted.");
             return;
         }
-        this.cpu.tick(this.bus);
-        console.log(`[Cycle ${this.cycleCount + 1}] BUS request:`, this.bus.request, "BUS response:", this.bus.response);
-        this.bus.tick(this.cpu, this.mem);
-        console.log(`[Cycle ${this.cycleCount + 1}] MEM pendingRequest:`, this.mem.pendingRequest);
-        this.mem.tick(this.bus);
-        console.log(`[Cycle ${this.cycleCount + 1}] CPU waitingRequest:`, this.cpu.waitingRequest, "CPU pendingResponse:", this.cpu.pendingResponse);
+        // Nếu CPU dừng nhưng DMA vẫn đang chạy thì chỉ tick DMA
+        if (this.cpu.isRunning === false && this.dma && this.dma.isBusy) {
+            this.dma.tick();
+            this.cycleCount++;
+            return;
+        }
+        try {
+            if (this.cpu.isRunning) {
+                this.cpu.tick(this.bus);
+                console.log(`[Cycle ${this.cycleCount + 1}] BUS request:`, this.bus.request, "BUS response:", this.bus.response);
+                this.bus.tick(this.cpu, this.mem);
+                console.log(`[Cycle ${this.cycleCount + 1}] MEM pendingRequest:`, this.mem.pendingRequest);
+                this.mem.tick(this.bus);
+                console.log(`[Cycle ${this.cycleCount + 1}] CPU waitingRequest:`, this.cpu.waitingRequest, "CPU pendingResponse:", this.cpu.pendingResponse);
+            }
+        } catch (e) {
+            this.cpu.isRunning = false;
+            console.error(e);
+        }
+        // Chỉ tick DMA nếu CPU đang chạy (để tránh tick DMA lặp lại khi CPU đã dừng)
+        if (this.cpu.isRunning && this.dma.isBusy) {
+            this.dma.tick();
+        }
         this.cycleCount++;
     }
 };
 
 simulator.reset();
+console.log("DMA memory === MEM memory:", simulator.dma.memory === simulator.mem.mem);
+console.log("MEM memory === tilelinkMem memory:", simulator.mem.mem === simulator.tilelinkMem.mem);
+
+function tickUntilDMA() {
+    let foundSW_DMA = false;
+    let maxTicks = 1000;
+    for (let i = 0; i < maxTicks; i++) {
+        simulator.tick();
+        // Đợi cho đến khi SW packed value DMA đã gửi request và tất cả request đã xử lý xong
+        if (
+            simulator.mem._pendingDMA && // Đã nhận packed value
+            !simulator.mem.pendingRequest &&
+            !simulator.cpu.waitingRequest &&
+            !simulator.cpu.pendingResponse
+        ) {
+            foundSW_DMA = true;
+            simulator.cpu.isRunning = false;
+            break;
+        }
+    }
+    if (!foundSW_DMA) {
+        console.warn("Không tìm thấy lệnh SW packed value DMA sau khi tick!");
+        return;
+    }
+    // Chỉ tick DMA cho đến khi xong
+    while (simulator.dma.isBusy) {
+        simulator.tick(); // tick chỉ DMA
+    }
+    // Kiểm tra vùng nguồn và vùng đích
+    for (let i = 0; i < 4; i++) {
+        const srcAddr = 0x100 + i;
+        const dstAddr = 0x20 + i;
+        console.log(`Sau DMA: src[0x${srcAddr.toString(16)}]=0x${(simulator.mem.mem[srcAddr] ?? 0).toString(16)}, dst[0x${dstAddr.toString(16)}]=0x${(simulator.mem.mem[dstAddr] ?? 0).toString(16)}`);
+    }
+}
+tickUntilDMA();

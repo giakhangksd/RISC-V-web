@@ -68,6 +68,7 @@ export const assembler = {
     directives: {
         '.text': function (operands) { this._handleTextDirective(operands); },
         '.data': function (operands) { this._handleDataDirective(operands); },
+        '.section': function (operands) { this._handleSectionDirective(operands); },
         '.word': function (operands) { this._handleWordDirective(operands); },
         '.half': function (operands) { this._handleHalfDirective(operands); },
         '.byte': function (operands) { this._handleByteDirective(operands); },
@@ -175,10 +176,29 @@ export const assembler = {
         this._pass2();
 
         // Xác định địa chỉ bắt đầu của chương trình
-        let startAddress = this.labels['_start']?.address ?? this.labels['main']?.address;
-        if (startAddress === undefined) {
-            const firstInstr = this.instructionLines.find(l => (l.type === 'instruction' || l.type === 'pseudo-instruction') && l.address !== undefined);
-            startAddress = firstInstr ? firstInstr.address : this.textBaseAddress;
+        let startAddress = undefined;
+
+        // Ưu tiên nhãn _start nếu có, và nằm trong vùng .text
+        if (
+          this.labels["_start"]?.type === "instruction" &&
+          this.labels["_start"].address >= this.textBaseAddress
+        ) {
+          startAddress = this.labels["_start"].address;
+        } else {
+          // Nếu không có _start hợp lệ, tìm dòng mã đầu tiên trong .text
+          const firstTextInstr = this.instructionLines.find(
+            (l) =>
+              (l.type === "instruction" || l.type === "pseudo-instruction") &&
+              l.address >= this.textBaseAddress
+          );
+          startAddress = firstTextInstr
+            ? firstTextInstr.address
+            : this.textBaseAddress;
+        }
+
+        // Nếu có nhãn _start, đặt startAddress theo nhãn đó
+        if (this.labels['_start'] !== undefined) {
+            startAddress = this.labels['_start'].address;
         }
 
         return {
@@ -392,130 +412,182 @@ export const assembler = {
         return { offset: offsetValue, baseRegIndex: baseRegIndex };
     },
 
-    // Hàm mã hóa một lệnh thành chuỗi nhị phân 32-bit
-    _encodeInstruction(instrInfo, operands, instructionAddress) {
-        const { type, mnemonic } = instrInfo;
-        let rd, rs1, rs2, imm, rd_s, rs1_s, rs2_s, imm_s, binaryInstruction;
-        
-        const encodeReg = (regStr) => this._decToBin(this.getRegisterIndex(regStr), 5);
-        const encodeImm = (immStr, bits, isRelative) => {
-            const immValue = this._parseImmediate(immStr, bits, isRelative, false, instructionAddress);
-            return this._decToBin(immValue, bits);
-        };
+/**
+ * Mã hóa một lệnh assembly đã được phân tích thành chuỗi nhị phân 32-bit.
+ * @param {object} instrInfo - Thông tin về lệnh từ bảng opcodes.
+ * @param {string[]} operands - Mảng các toán hạng của lệnh.
+ * @param {number} instructionAddress - Địa chỉ của lệnh hiện tại.
+ * @returns {string} - Chuỗi nhị phân 32-bit của lệnh đã mã hóa.
+ */
+_encodeInstruction(instrInfo, operands, instructionAddress) {
+    const { type, mnemonic } = instrInfo;
+    let rd_s, rs1_s, rs2_s, imm_s, binaryInstruction;
 
-        try {
-            switch (type) {
-                case 'R':
-                    rd_s = encodeReg(operands[0]);
-                    rs1_s = encodeReg(operands[1]);
-                    rs2_s = encodeReg(operands[2]);
-                    binaryInstruction = instrInfo.funct7 + rs2_s + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
-                    break;
-                // case 'I':
-                // case 'I-shamt':
-                //     rd_s = encodeReg(operands[0]);
-                //     rs1_s = encodeReg(operands[1]);
-                //     const immBits = (type === 'I-shamt') ? 5 : 12;
-                //     imm_s = encodeImm(operands[2], immBits, false);
-                //     const funct7_I = (type === 'I-shamt') ? instrInfo.funct7 : imm_s.substring(0, 7);
-                //     binaryInstruction = funct7_I + (type === 'I-shamt' ? imm_s : imm_s.substring(7)) + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
-                    
-                //     if (mnemonic === 'jalr' || mnemonic === 'lw' || mnemonic === 'lb' || mnemonic === 'lh' || mnemonic === 'lbu' || mnemonic === 'lhu') {
-                //          rd_s = encodeReg(operands[0]);
-                //          const memOp = this._parseMemoryOperand(operands[1]);
-                //          rs1_s = this._decToBin(memOp.baseRegIndex, 5);
-                //          imm_s = this._decToBin(memOp.offset, 12);
-                //          binaryInstruction = imm_s + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
-                //     }
-                //     break;
-                case 'I':
-                case 'I-shamt':
-                    rd_s = encodeReg(operands[0]);
-                    if (mnemonic === 'jalr' || mnemonic === 'lw' || mnemonic === 'lb' || mnemonic === 'lh' || mnemonic === 'lbu' || mnemonic === 'lhu') {
-                        const memOp = this._parseMemoryOperand(operands[1]);
-                        rs1_s = this._decToBin(memOp.baseRegIndex, 5);
-                        imm_s = this._decToBin(memOp.offset, 12);
-                        binaryInstruction = imm_s + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
-                    } else {
-                        rs1_s = encodeReg(operands[1]);
-                        const immBits = (type === 'I-shamt') ? 5 : 12;
-                        imm_s = encodeImm(operands[2], immBits, false);
-                        const funct7_I = (type === 'I-shamt') ? instrInfo.funct7 : imm_s.substring(0, 7);
-                        binaryInstruction = funct7_I + (type === 'I-shamt' ? imm_s : imm_s.substring(7)) + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
-                    }
+    // --- Hàm trợ giúp nội bộ ---
+    const encodeReg = (regStr) => this._decToBin(this.getRegisterIndex(regStr), 5);
+    const encodeImm = (immStr, bits, isRelative) => {
+        const immValue = this._parseImmediate(immStr, bits, isRelative, false, instructionAddress);
+        return this._decToBin(immValue, bits);
+    };
+
+    try {
+        switch (type) {
+            // ===================
+            // == Lệnh loại R (Register-Register)
+            // ===================
+            case 'R':
+                rd_s = encodeReg(operands[0]);
+                rs1_s = encodeReg(operands[1]);
+                rs2_s = encodeReg(operands[2]);
+                binaryInstruction = instrInfo.funct7 + rs2_s + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
                 break;
-                case 'S':
-                    rs2_s = encodeReg(operands[0]);
-                    const memOpS = this._parseMemoryOperand(operands[1]);
-                    rs1_s = this._decToBin(memOpS.baseRegIndex, 5);
-                    imm_s = this._decToBin(memOpS.offset, 12);
-                    binaryInstruction = imm_s.substring(0, 7) + rs2_s + rs1_s + instrInfo.funct3 + imm_s.substring(7) + instrInfo.opcode;
-                    break;
-                case 'B':
-                    rs1_s = encodeReg(operands[0]);
-                    rs2_s = encodeReg(operands[1]);
-                    imm_s = encodeImm(operands[2], 13, true);
-                    binaryInstruction = imm_s[0] + imm_s.slice(2, 8) + rs2_s + rs1_s + instrInfo.funct3 + imm_s.slice(8, 12) + imm_s[1] + instrInfo.opcode;
-                    break;
-                case 'U':
-                    rd_s = encodeReg(operands[0]);
-                    imm = this._parseImmediate(operands[1], 32, false, false, instructionAddress);
-                    imm_s = this._decToBin(imm, 32);
-                    binaryInstruction = imm_s.substring(0, 20) + rd_s + instrInfo.opcode;
-                    break;
-                case 'J':
-                    rd_s = encodeReg(operands[0]);
-                    imm_s = encodeImm(operands[1], 21, true);
-                    binaryInstruction = imm_s[0] + imm_s.slice(10, 20) + imm_s[9] + imm_s.slice(1, 9) + rd_s + instrInfo.opcode;
-                    break;
 
-                // --- Floating-Point Types ---
-                case 'R-FP':
-                    rd_s = encodeReg(operands[0]);
-                    rs1_s = encodeReg(operands[1]);
-                    rs2_s = encodeReg(operands[2]);
-                    const rm = instrInfo.funct3 || '000'; // Default rounding mode nếu không có
-                    binaryInstruction = instrInfo.funct7 + rs2_s + rs1_s + rm + rd_s + instrInfo.opcode;
+            // ===================
+            // == Lệnh loại I (Register-Immediate)
+            // ===================
+            case 'I':
+            case 'I-shamt':
+                // Xử lý các lệnh đặc biệt không có toán hạng
+                if (mnemonic === 'ecall') {
+                    binaryInstruction = '00000000000000000000000001110011'; // imm=0,rs1=0,rd=0
                     break;
-                case 'R-FP-CVT':
-                    rd_s = encodeReg(operands[0]);
-                    rs1_s = encodeReg(operands[1]);
-                    rs2_s = instrInfo.rs2_subfield;
-                    binaryInstruction = instrInfo.funct7 + rs2_s + rs1_s + (instrInfo.funct3 || '000') + rd_s + instrInfo.opcode;
+                }
+                if (mnemonic === 'ebreak') {
+                    binaryInstruction = '00000000000100000000000001110011'; // imm=1,rs1=0,rd=0
                     break;
-                case 'R-FP-CMP':
-                    rd_s = encodeReg(operands[0]);
-                    rs1_s = encodeReg(operands[1]);
-                    rs2_s = encodeReg(operands[2]);
-                    binaryInstruction = instrInfo.funct7 + rs2_s + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
-                    break;
-                case 'I-FP': // FLW
-                    rd_s = encodeReg(operands[0]);
-                    const memOpIFP = this._parseMemoryOperand(operands[1]);
-                    rs1_s = this._decToBin(memOpIFP.baseRegIndex, 5);
-                    imm_s = this._decToBin(memOpIFP.offset, 12);
+                }
+                
+                rd_s = encodeReg(operands[0]);
+                
+                // Xử lý các lệnh load và jalr có định dạng `offset(base)`
+                if (['lw', 'lh', 'lb', 'lbu', 'lhu', 'jalr'].includes(mnemonic)) {
+                    const memOp = this._parseMemoryOperand(operands[1]);
+                    rs1_s = this._decToBin(memOp.baseRegIndex, 5);
+                    imm_s = this._decToBin(memOp.offset, 12);
                     binaryInstruction = imm_s + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
-                    break;
-                case 'S-FP': // FSW
-                    rs2_s = encodeReg(operands[0]);
-                    const memOpSFP = this._parseMemoryOperand(operands[1]);
-                    rs1_s = this._decToBin(memOpSFP.baseRegIndex, 5);
-                    imm_s = this._decToBin(memOpSFP.offset, 12);
-                    binaryInstruction = imm_s.substring(0, 7) + rs2_s + rs1_s + instrInfo.funct3 + imm_s.substring(7) + instrInfo.opcode;
-                    break;
+                } 
+                // Xử lý các lệnh dịch bit (shift)
+                else if (type === 'I-shamt') {
+                    rs1_s = encodeReg(operands[1]);
+                    const shamt = encodeImm(operands[2], 5, false); // shamt là 5 bit
+                    binaryInstruction = instrInfo.funct7 + shamt + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
+                }
+                // Các lệnh loại I còn lại (addi, xori, ...)
+                else {
+                    rs1_s = encodeReg(operands[1]);
+                    imm_s = encodeImm(operands[2], 12, false); // immediate là 12 bit
+                    binaryInstruction = imm_s + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
+                }
+                break;
 
-                default:
-                    throw new Error(`Unsupported instruction type "${type}" for mnemonic "${mnemonic}"`);
-            }
-        } catch (e) {
-            throw new Error(`Encoding [${mnemonic} ${operands.join(', ')}]: ${e.message}`);
-        }
+            // ===================
+            // == Lệnh loại S (Store)
+            // ===================
+            case 'S':
+                rs2_s = encodeReg(operands[0]); // Thanh ghi nguồn nằm ở toán hạng đầu
+                const memOpS = this._parseMemoryOperand(operands[1]);
+                rs1_s = this._decToBin(memOpS.baseRegIndex, 5);
+                imm_s = encodeImm(String(memOpS.offset), 12, false);
+                // Ghép 2 phần của immediate
+                binaryInstruction = imm_s.substring(0, 7) + rs2_s + rs1_s + instrInfo.funct3 + imm_s.substring(7) + instrInfo.opcode;
+                break;
 
-        if (binaryInstruction.length !== 32) {
-            throw new Error(`Internal Error: Encoded binary for "${mnemonic}" is ${binaryInstruction.length} bits, expected 32.`);
+            // ===================
+            // == Lệnh loại B (Branch)
+            // ===================
+            case 'B':
+                rs1_s = encodeReg(operands[0]);
+                rs2_s = encodeReg(operands[1]);
+                imm_s = encodeImm(operands[2], 13, true); // Immediate 13 bit, tương đối
+                // Ghép các bit của immediate theo đúng thứ tự
+                const imm12 = imm_s[0];
+                const imm11 = imm_s[1];
+                const imm10_5 = imm_s.slice(2, 8);
+                const imm4_1 = imm_s.slice(8, 12);
+                binaryInstruction = imm12 + imm10_5 + rs2_s + rs1_s + instrInfo.funct3 + imm4_1 + imm11 + instrInfo.opcode;
+                break;
+
+            // ===================
+            // == Lệnh loại U (Upper Immediate)
+            // ===================
+            case 'U':
+                rd_s = encodeReg(operands[0]);
+                let immValue = this._parseImmediate(operands[1], 32, false, false, instructionAddress);
+                // Lấy 20 bit cao của immediate (immValue << 12), sau đó lấy 32 bit nhị phân và cắt 20 bit đầu
+                let imm20U = this._decToBin(immValue << 12, 32).substring(0, 20);
+                binaryInstruction = imm20U + rd_s + instrInfo.opcode;
+            break;
+            // ===================
+            // == Lệnh loại J (Jump)
+            // ===================
+            case 'J':
+                rd_s = encodeReg(operands[0]);
+                imm_s = encodeImm(operands[1], 21, true); // Immediate 21 bit, tương đối
+                // Ghép các bit của immediate theo đúng thứ tự
+                const imm20 = imm_s[0];
+                const imm19_12 = imm_s.slice(1, 9);
+                const imm11_j = imm_s[9];
+                const imm10_1 = imm_s.slice(10, 20);
+                binaryInstruction = imm20 + imm10_1 + imm11_j + imm19_12 + rd_s + instrInfo.opcode;
+                break;
+            
+            // ===================================
+            // == CÁC LỆNH DẤU PHẨY ĐỘNG (FLOAT)
+            // ===================================
+            case 'R-FP':
+                rd_s = encodeReg(operands[0]);
+                rs1_s = encodeReg(operands[1]);
+                rs2_s = encodeReg(operands[2]);
+                const rm = instrInfo.funct3 || '000'; // Chế độ làm tròn mặc định
+                binaryInstruction = instrInfo.funct7 + rs2_s + rs1_s + rm + rd_s + instrInfo.opcode;
+                break;
+            
+            case 'R-FP-CVT': // Lệnh chuyển đổi
+                rd_s = encodeReg(operands[0]);
+                rs1_s = encodeReg(operands[1]);
+                rs2_s = instrInfo.rs2_subfield; // rs2 không phải là thanh ghi mà là một giá trị cố định
+                const rm_cvt = instrInfo.funct3 || '000';
+                binaryInstruction = instrInfo.funct7 + rs2_s + rs1_s + rm_cvt + rd_s + instrInfo.opcode;
+                break;
+                
+            case 'R-FP-CMP': // Lệnh so sánh
+                rd_s = encodeReg(operands[0]); // Thanh ghi đích là thanh ghi số nguyên
+                rs1_s = encodeReg(operands[1]);
+                rs2_s = encodeReg(operands[2]);
+                binaryInstruction = instrInfo.funct7 + rs2_s + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
+                break;
+
+            case 'I-FP': // FLW
+                rd_s = encodeReg(operands[0]);
+                const memOpIFP = this._parseMemoryOperand(operands[1]);
+                rs1_s = this._decToBin(memOpIFP.baseRegIndex, 5);
+                imm_s = this._decToBin(memOpIFP.offset, 12);
+                binaryInstruction = imm_s + rs1_s + instrInfo.funct3 + rd_s + instrInfo.opcode;
+                break;
+
+            case 'S-FP': // FSW
+                rs2_s = encodeReg(operands[0]);
+                const memOpSFP = this._parseMemoryOperand(operands[1]);
+                rs1_s = this._decToBin(memOpSFP.baseRegIndex, 5);
+                imm_s = this._decToBin(memOpSFP.offset, 12);
+                binaryInstruction = imm_s.substring(0, 7) + rs2_s + rs1_s + instrInfo.funct3 + imm_s.substring(7) + instrInfo.opcode;
+                break;
+
+            default:
+                throw new Error(`Unsupported instruction type "${type}" for mnemonic "${mnemonic}"`);
         }
-        return binaryInstruction;
-    },
+    } catch (e) {
+        // Thêm thông tin chi tiết vào thông báo lỗi để dễ dàng gỡ lỗi
+        throw new Error(`Encoding [${mnemonic} ${operands.join(', ')}]: ${e.message}`);
+    }
+
+    // Kiểm tra cuối cùng để đảm bảo mọi lệnh đều được mã hóa thành 32 bit
+    if (binaryInstruction.length !== 32) {
+        throw new Error(`Internal Error: Encoded binary for "${mnemonic}" is ${binaryInstruction.length} bits, expected 32.`);
+    }
+
+    return binaryInstruction;
+},
 
     // Ước lượng kích thước của lệnh giả
     _estimatePseudoInstructionSize(mnemonic, operands, lineNumber, isPass1 = false) {
@@ -542,14 +614,15 @@ export const assembler = {
                 if (immValueLi >= -2048 && immValueLi <= 2047) {
                     expandedInstructions.push({ mnemonic: 'addi', operands: [rdLi, 'x0', immValueLi.toString()], address: address });
                 } else {
-                    let imm_hi = immValueLi >>> 12;
-                    const imm_lo = immValueLi & 0xFFF;
-                    if (imm_lo & 0x800) imm_hi = (imm_hi + 1) & 0xFFFFF; // Điều chỉnh làm tròn
-                    const imm_lo_signed = (imm_lo >= 0x800) ? (imm_lo - 0x1000) : imm_lo;
-                    
-                    expandedInstructions.push({ mnemonic: 'lui', operands: [rdLi, imm_hi.toString()], address: address });
-                    if (imm_lo_signed !== 0 || immValueLi === 0) {
-                        expandedInstructions.push({ mnemonic: 'addi', operands: [rdLi, rdLi, imm_lo_signed.toString()], address: address + 4 });
+                    // Chuẩn RISC-V: làm tròn lên nếu bit 11 của immValueLi là 1
+                    const upper = (immValueLi + 0x800) >> 12;
+                    let lower = immValueLi - (upper << 12);
+                    // Sign-extend lower về 12 bit
+                    if (lower < -2048) lower += 4096;
+                    if (lower > 2047) lower -= 4096;
+                    expandedInstructions.push({ mnemonic: 'lui', operands: [rdLi, upper.toString()], address: address });
+                    if (lower !== 0 || immValueLi === 0) {
+                        expandedInstructions.push({ mnemonic: 'addi', operands: [rdLi, rdLi, lower.toString()], address: address + 4 });
                     }
                 }
                 break;
@@ -635,6 +708,52 @@ export const assembler = {
         this.inDataSegment = true;
         this.currentSection = "data";
         this.currentAddress = (operands.length === 1) ? this._parseNumericArg(operands[0], '.data address') : this.dataBaseAddress;
+    },
+    _handleSectionDirective(operands) {
+        if (operands.length === 0) {
+            throw new Error('.section directive requires a section name');
+        }
+        
+        const sectionName = operands[0].trim();
+        
+        // Hỗ trợ các section phổ biến trong riscv-arch-test và RISC-V assembly
+        if (sectionName === ".text.init" || sectionName === ".text") {
+            this.inDataSegment = false;
+            this.currentSection = "text";
+            // Đặt địa chỉ về text base nếu chưa có địa chỉ cụ thể
+            if (this.currentAddress < this.textBaseAddress) {
+                this.currentAddress = this.textBaseAddress;
+            }
+        } else if (sectionName === ".data" || sectionName === ".rodata" || sectionName === ".bss") {
+            this.inDataSegment = true;
+            this.currentSection = "data";
+            // Đặt địa chỉ về data base nếu chưa có địa chỉ cụ thể
+            if (this.currentAddress < this.dataBaseAddress) {
+                this.currentAddress = this.dataBaseAddress;
+            }
+        } else if (sectionName === ".text.startup" || sectionName === ".text.hot" || sectionName === ".text.cold") {
+            // Các section text đặc biệt khác
+            this.inDataSegment = false;
+            this.currentSection = "text";
+        } else if (sectionName === ".data.rel" || sectionName === ".data.rel.local" || sectionName === ".data.rel.ro") {
+            // Các section data đặc biệt khác
+            this.inDataSegment = true;
+            this.currentSection = "data";
+        } else {
+            console.warn(`⚠️  Cảnh báo: Bỏ qua section không hỗ trợ: ${sectionName}`);
+            // Bỏ qua không lỗi, nhưng không đổi section
+            return;
+        }
+        
+        // Nếu có địa chỉ được chỉ định trong operands[1]
+        if (operands.length >= 2) {
+            try {
+                this.currentAddress = this._parseNumericArg(operands[1], `.section ${sectionName} address`);
+            } catch (e) {
+                // Nếu operands[1] không phải là địa chỉ, có thể là attributes, bỏ qua
+                console.warn(`⚠️  Cảnh báo: Không thể parse địa chỉ cho section ${sectionName}: ${operands[1]}`);
+            }
+        }
     },
     _ensureDataSection(directiveName) {
         if (this.currentSection !== "data") this._handleDataDirective([]);
