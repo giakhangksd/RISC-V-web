@@ -947,37 +947,3 @@ export const simulator = {
 simulator.reset();
 console.log("DMA memory === MEM memory:", simulator.dma.memory === simulator.mem.mem);
 console.log("MEM memory === tilelinkMem memory:", simulator.mem.mem === simulator.tilelinkMem.mem);
-
-function tickUntilDMA() {
-    let foundSW_DMA = false;
-    let maxTicks = 1000;
-    for (let i = 0; i < maxTicks; i++) {
-        simulator.tick();
-        // Đợi cho đến khi SW packed value DMA đã gửi request và tất cả request đã xử lý xong
-        if (
-            simulator.mem._pendingDMA && // Đã nhận packed value
-            !simulator.mem.pendingRequest &&
-            !simulator.cpu.waitingRequest &&
-            !simulator.cpu.pendingResponse
-        ) {
-            foundSW_DMA = true;
-            simulator.cpu.isRunning = false;
-            break;
-        }
-    }
-    if (!foundSW_DMA) {
-        console.warn("Không tìm thấy lệnh SW packed value DMA sau khi tick!");
-        return;
-    }
-    // Chỉ tick DMA cho đến khi xong
-    while (simulator.dma.isBusy) {
-        simulator.tick(); // tick chỉ DMA
-    }
-    // Kiểm tra vùng nguồn và vùng đích
-    for (let i = 0; i < 4; i++) {
-        const srcAddr = 0x100 + i;
-        const dstAddr = 0x20 + i;
-        console.log(`Sau DMA: src[0x${srcAddr.toString(16)}]=0x${(simulator.mem.mem[srcAddr] ?? 0).toString(16)}, dst[0x${dstAddr.toString(16)}]=0x${(simulator.mem.mem[dstAddr] ?? 0).toString(16)}`);
-    }
-}
-tickUntilDMA();
