@@ -870,7 +870,7 @@ class DMAController {
         this.callback = callback;
     }
 
-    // Tick DMA: mỗi tick copy 1 byte (có thể tăng tốc nếu muốn)
+    // Tick DMA: mỗi tick copy 1 byte 
     tick() {
         if (!this.isBusy) return;
         if (this.progress < this.length) {
