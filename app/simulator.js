@@ -39,33 +39,40 @@ class TileLinkULMemory {
     tick(bus) {
         if (this.pendingRequest) {
             let data = null;
-            // Nếu ghi vào địa chỉ điều khiển DMA (ví dụ 0xFF00)
-            if (this.pendingRequest.type === 'write' && this.pendingRequest.address === 0xFF00) {
-                // Giả sử value là packed: src(16bit) | dst(8bit) | length(8bit)
-                const value = this.pendingRequest.value;
-                const src = (value >> 16) & 0xFFFF;
-                const dst = (value >> 8) & 0xFF;
-                const length = value & 0xFF;
-                // Lưu thông tin DMA cho lần tick tiếp theo
-                this._pendingDMA = { src, dst, length };
-            } else if (this.pendingRequest.type === 'read') {
-                data =
-                    ((this.mem[this.pendingRequest.address + 3] ?? 0) << 24) |
-                    ((this.mem[this.pendingRequest.address + 2] ?? 0) << 16) |
-                    ((this.mem[this.pendingRequest.address + 1] ?? 0) << 8) |
-                    (this.mem[this.pendingRequest.address] ?? 0);
-            } else if (this.pendingRequest.type === 'write') {
-                if (this.pendingRequest.address !== 0xFF00) {
-                    this.mem[this.pendingRequest.address] = this.pendingRequest.value & 0xFF;
-                    this.mem[this.pendingRequest.address + 1] = (this.pendingRequest.value >> 8) & 0xFF;
-                    this.mem[this.pendingRequest.address + 2] = (this.pendingRequest.value >> 16) & 0xFF;
-                    this.mem[this.pendingRequest.address + 3] = (this.pendingRequest.value >> 24) & 0xFF;
+            // Convert to unsigned 32-bit address
+            const addr = this.pendingRequest.address >>> 0;
+
+            // Handle DMA register access (0xFFED0000-0xFFED0007)
+            if (addr >= 0xFFED0000 && addr <= 0xFFED0007) {
+                if (typeof simulator !== "undefined" && simulator.dma) {
+                    if (this.pendingRequest.type === 'read') {
+                        data = simulator.dma.readRegister(addr);
+                    } else if (this.pendingRequest.type === 'write') {
+                        simulator.dma.writeRegister(addr, this.pendingRequest.value);
+                        data = 0; // Write operation, return dummy data
+                    }
+                } else {
+                    console.warn(`[MEM] DMA not available for register access: 0x${this.pendingRequest.address.toString(16)}`);
+                    data = 0;
                 }
+            }
+            // Handle standard memory operations
+            else if (this.pendingRequest.type === 'read') {
+                data = ((this.mem[this.pendingRequest.address + 3] ?? 0) << 24) |
+                       ((this.mem[this.pendingRequest.address + 2] ?? 0) << 16) |
+                       ((this.mem[this.pendingRequest.address + 1] ?? 0) << 8) |
+                       (this.mem[this.pendingRequest.address] ?? 0);
+            } else if (this.pendingRequest.type === 'write') {
+                this.mem[this.pendingRequest.address] = this.pendingRequest.value & 0xFF;
+                this.mem[this.pendingRequest.address + 1] = (this.pendingRequest.value >> 8) & 0xFF;
+                this.mem[this.pendingRequest.address + 2] = (this.pendingRequest.value >> 16) & 0xFF;
+                this.mem[this.pendingRequest.address + 3] = (this.pendingRequest.value >> 24) & 0xFF;
             } else if (this.pendingRequest.type === 'readByte') {
                 data = this.mem[this.pendingRequest.address] ?? 0;
             } else if (this.pendingRequest.type === 'writeByte') {
                 this.mem[this.pendingRequest.address] = this.pendingRequest.value & 0xFF;
             }
+            //response to CPU
             bus.sendResponse({ ...this.pendingRequest, data });
             this.pendingRequest = null;
         }
@@ -847,45 +854,475 @@ class TileLinkCPU {
     }
 }
 
-// --- DMA Controller ---
+// --- DMA Descriptor Class ---
+class DMADescriptor {
+    constructor(sourceAddr = 0, destAddr = 0, configWord = 0) {
+        this.sourceAddr = sourceAddr;      // 32-bit source base address
+        this.destAddr = destAddr;          // 32-bit destination base address  
+        this.configWord = configWord;      // 32-bit configuration word
+    }
+
+    // Parse configuration word để lấy các thông số
+    parseConfig() {
+        const config = this.configWord;
+        return {
+            numElements: config & 0xFFFFFF,              // Bit 23:0 - Number of elements
+            reserved: (config >> 24) & 0x7,             // Bit 26:24 - Reserved
+            bswap: (config >> 27) & 0x1,                // Bit 27 - Byte swap
+            srcMode: (config >> 28) & 0x3,              // Bit 29:28 - Source mode
+            dstMode: (config >> 30) & 0x3               // Bit 31:30 - Destination mode
+        };
+    }
+
+    // Tạo configuration word từ các thông số
+    static createConfig(numElements, bswap = 0, srcMode = 2, dstMode = 2) {
+        if (numElements <= 0 || numElements > 0xFFFFFF) {
+            throw new Error("Number of elements must be > 0 and <= 16777215");
+        }
+        return (dstMode << 30) | (srcMode << 28) | (bswap << 27) | numElements;
+    }
+
+    toString() {
+        const config = this.parseConfig();
+        return `DMADescriptor{src:0x${this.sourceAddr.toString(16)}, dst:0x${this.destAddr.toString(16)}, ` +
+               `elements:${config.numElements}, srcMode:${config.srcMode}, dstMode:${config.dstMode}, bswap:${config.bswap}}`;
+    }
+}
+
+// --- DMA Registers Class ---
+class DMARegisters {
+    constructor() {
+        // Control Register bits
+        this.enabled = false;              // Bit 0: DMA_CTRL_EN
+        this.startRequested = false;       // Bit 1: DMA_CTRL_START (write-only trigger)
+        
+        // Status flags (read-only)
+        this.busy = false;                 // Bit 31: DMA_CTRL_BUSY
+        this.done = false;                 // Bit 30: DMA_CTRL_DONE
+        this.error = false;                // Bit 29: DMA_CTRL_ERROR
+        this.fifoFull = false;            // Bit 28: DMA_CTRL_DFULL
+        this.fifoEmpty = true;            // Bit 27: DMA_CTRL_DEMPTY
+        
+        // Descriptor FIFO
+        this.descriptorFifo = [];
+        this.fifoDepth = 8;               // 2^3 = 8 entries (configurable)
+        this.currentDescriptorWords = []; // Buffer for building descriptor (needs 3 words)
+        
+        console.log(`[DMA] Registers initialized. FIFO depth: ${this.fifoDepth}`);
+    }
+
+    // Read CTRL register (0xFFED0000)
+    readCtrl() {
+        let ctrl = 0;
+        
+        // Control bits
+        if (this.enabled) ctrl |= 0x1;        // Bit 0: Enable status
+        if (this.startRequested) ctrl |= 0x2; // Bit 1: Start requested
+        if (this.done) ctrl |= 0x4;           // Bit 2: Transfer complete 
+        
+        // Bits 19:16: FIFO depth (log2)
+        const fifoDepthLog2 = Math.log2(this.fifoDepth);
+        ctrl |= (fifoDepthLog2 & 0xF) << 16;
+        
+        // Status flags (read-only) - keep high bits for compatibility
+        if (this.fifoEmpty) ctrl |= (1 << 27);
+        if (this.fifoFull) ctrl |= (1 << 28);
+        if (this.error) ctrl |= (1 << 29);
+        if (this.done) ctrl |= (1 << 30);      // Keep old bit for compatibility
+        if (this.busy) ctrl |= (1 << 31);
+        
+        return ctrl >>> 0; // Ensure unsigned 32-bit
+    }
+
+    // Write CTRL register (0xFFED0000)
+    writeCtrl(value) {
+        console.log(`[DMA] Writing CTRL: 0x${value.toString(16)}`);
+        
+        // Bit 0: DMA_CTRL_EN (enable/disable)
+        const newEnabled = (value & 0x1) !== 0;
+        if (newEnabled !== this.enabled) {
+            this.enabled = newEnabled;
+            if (!this.enabled) {
+                // Disable resets the DMA
+                this.reset();
+                console.log("[DMA] DMA disabled and reset");
+            } else {
+                console.log("[DMA] DMA enabled");
+            }
+        }
+        
+        // Bit 1: DMA_CTRL_START (trigger transfer)
+        if (value & 0x2) {
+            this.startRequested = true;
+            console.log("[DMA] Start transfer requested");
+        }
+        
+        // Bit 27: DMA_CTRL_ACK (acknowledge interrupts)
+        if (value & (1 << 27)) {
+            this.done = false;
+            this.error = false;
+            console.log("[DMA] Interrupts acknowledged");
+        }
+        
+        return true;
+    }
+
+    // Write to descriptor FIFO (0xFFED0004)
+    writeDescriptor(word) {
+        console.log(`[DMA DESC] Writing descriptor word: 0x${word.toString(16)}, currentWords=${this.currentDescriptorWords.length}`);
+        if (this.fifoFull) {
+            console.warn("[DMA] Cannot write descriptor: FIFO is full");
+            return false;
+        }
+
+        this.currentDescriptorWords.push(word);
+        console.log(`[DMA] Descriptor word ${this.currentDescriptorWords.length}/3: 0x${word.toString(16)}`);
+
+        // When we have all 3 words, create descriptor
+        if (this.currentDescriptorWords.length === 3) {
+            const descriptor = new DMADescriptor(
+                this.currentDescriptorWords[0], // Source address
+                this.currentDescriptorWords[1], // Destination address
+                this.currentDescriptorWords[2]  // Configuration word
+            );
+            
+            this.descriptorFifo.push(descriptor);
+            this.currentDescriptorWords = [];
+            
+            // Update FIFO status
+            this.fifoEmpty = false;
+            this.fifoFull = (this.descriptorFifo.length >= this.fifoDepth);
+            
+            console.log(`[DMA] Descriptor added: ${descriptor.toString()}`);
+            console.log(`[DMA] FIFO status: ${this.descriptorFifo.length}/${this.fifoDepth} entries`);
+        }
+        
+        return true;
+    }
+
+    // Get next descriptor from FIFO
+    getNextDescriptor() {
+        if (this.fifoEmpty) return null;
+        
+        const descriptor = this.descriptorFifo.shift();
+        
+        // Update FIFO status
+        this.fifoEmpty = (this.descriptorFifo.length === 0);
+        this.fifoFull = false;
+        
+        console.log(`[DMA] Retrieved descriptor: ${descriptor.toString()}`);
+        console.log(`[DMA] FIFO entries remaining: ${this.descriptorFifo.length}`);
+        
+        return descriptor;
+    }
+
+    // Reset all state
+    reset() {
+        this.busy = false;
+        this.done = false;
+        this.error = false;
+        this.startRequested = false;
+        this.descriptorFifo = [];
+        this.currentDescriptorWords = [];
+        this.fifoEmpty = true;
+        this.fifoFull = false;
+        console.log("[DMA] Reset completed");
+    }
+
+    // Check if transfer can start
+    canStartTransfer() {
+        return this.enabled && !this.busy && !this.fifoEmpty && this.startRequested;
+    }
+}
+
+// --- Enhanced DMA Controller ---
 class DMAController {
     constructor(memory) {
         this.memory = memory;
-        this.isBusy = false;
-        this.src = 0;
-        this.dst = 0;
-        this.length = 0;
-        this.progress = 0;
+        this.registers = new DMARegisters();
+        
+        // Current transfer state
+        this.currentDescriptor = null;
+        this.transferProgress = 0;
+        this.currentSrcAddr = 0;
+        this.currentDstAddr = 0;
+        
+        // Transfer configuration
+        this.numElements = 0;
+        this.bswap = false;
+        this.srcMode = 0; // 00=const byte, 01=const word, 10=inc byte, 11=inc word
+        this.dstMode = 0;
+        
+        // Compatibility
         this.callback = null;
+        
+        console.log("[DMA] Controller initialized");
     }
 
-    // Khởi động DMA copy từ src sang dst, length bytes
+    // Memory-mapped register interface
+    readRegister(address) {
+        switch (address) {
+            case 0xFFED0000: // CTRL register
+                const ctrl = this.registers.readCtrl();
+                console.log(`[DMA] Read CTRL: 0x${ctrl.toString(16)}`);
+                return ctrl;
+            case 0xFFED0004: // DESC register (not readable)
+                console.warn("[DMA] DESC register is write-only");
+                return 0;
+            default:
+                console.warn(`[DMA] Read from unknown register: 0x${address.toString(16)}`);
+                return 0;
+        }
+    }
+
+    writeRegister(address, value) {
+        console.log(`[DMA DEBUG] Write to 0x${address.toString(16)} = 0x${value.toString(16)}`);
+        switch (address) {
+            case 0xFFED0000: // CTRL register
+                console.log(`[DMA DEBUG] CTRL write: enabled=${!!(value & 1)}, start=${!!(value & 2)}`);
+                return this.registers.writeCtrl(value);
+            case 0xFFED0004: // DESC register
+                return this.registers.writeDescriptor(value);
+            default:
+                console.warn(`[DMA] Write to unknown register: 0x${address.toString(16)}`);
+                return false;
+        }
+    }
+
+    // Legacy interface for compatibility
     start(src, dst, length, callback) {
-        if (this.isBusy) throw new Error("DMA is busy!");
-        this.src = src | 0;
-        this.dst = dst | 0;
-        this.length = length | 0;
-        this.progress = 0;
-        this.isBusy = true;
+        console.log(`[DMA] Legacy start: src=0x${src.toString(16)}, dst=0x${dst.toString(16)}, length=${length}`);
+        
+        // Enable DMA
+        this.registers.writeCtrl(1);
+        
+        // Create descriptor with incrementing byte mode
+        const config = DMADescriptor.createConfig(length, 0, 2, 2); // inc byte both
+        
+        // Write descriptor
+        this.registers.writeDescriptor(src);
+        this.registers.writeDescriptor(dst);
+        this.registers.writeDescriptor(config);
+        
+        // Start transfer
+        this.registers.writeCtrl(3); // Enable + Start
+        
         this.callback = callback;
     }
 
-    // Tick DMA: mỗi tick copy 1 byte 
+    // Main DMA tick function
     tick() {
-        if (!this.isBusy) return;
-        if (this.progress < this.length) {
-            const srcAddr = this.src + this.progress;
-            const dstAddr = this.dst + this.progress;
-            this.memory[dstAddr] = this.memory[srcAddr] ?? 0;
-            console.log(`[DMA WRITE] mem[0x${dstAddr.toString(16)}]=0x${(this.memory[dstAddr] ?? 0).toString(16)} (src=0x${srcAddr.toString(16)}, val=0x${(this.memory[srcAddr] ?? 0).toString(16)})`);
-            this.progress++;
-            // Sửa log để hiện địa chỉ thực tế
-            console.log(`[DMA] src=0x${srcAddr.toString(16)}, dst=0x${dstAddr.toString(16)}, length=${this.length}, progress=${this.progress}/${this.length}, busy=${this.isBusy}`);
+        console.log(`[DMA DEBUG] Tick: busy=${this.registers.busy}, progress=${this.transferProgress}/${this.numElements}`);
+        // Handle start request
+        if (this.registers.canStartTransfer()) {
+            this.startNextTransfer();
+            this.registers.startRequested = false;
         }
-        if (this.progress >= this.length) {
-            this.isBusy = false;
-            if (typeof this.callback === "function") this.callback();
+        
+        // Continue current transfer
+        if (this.registers.busy && this.currentDescriptor) {
+            this.performTransferStep();
         }
+    }
+
+    // Start next transfer from FIFO
+    startNextTransfer() {
+        this.currentDescriptor = this.registers.getNextDescriptor();
+        if (!this.currentDescriptor) {
+            console.warn("[DMA] No descriptors available to start");
+            return false;
+        }
+        
+        const config = this.currentDescriptor.parseConfig();
+        
+        // Set up transfer parameters
+        this.numElements = config.numElements;
+        this.bswap = config.bswap !== 0;
+        this.srcMode = config.srcMode;
+        this.dstMode = config.dstMode;
+        
+        this.currentSrcAddr = this.currentDescriptor.sourceAddr;
+        this.currentDstAddr = this.currentDescriptor.destAddr;
+        this.transferProgress = 0;
+        
+        // Update status
+        this.registers.busy = true;
+        this.registers.done = false;
+        this.registers.error = false;
+        
+        console.log(`[DMA] Transfer started: ${this.currentDescriptor.toString()}`);
+        console.log(`[DMA] Config: elements=${this.numElements}, bswap=${this.bswap}, srcMode=${this.srcMode}, dstMode=${this.dstMode}`);
+        
+        return true;
+    }
+
+    // Perform one step of transfer
+    performTransferStep() {
+        console.log(`[DMA DEBUG] Transfer step: ${this.transferProgress}/${this.numElements}`);
+        if (this.transferProgress >= this.numElements) {
+            this.completeTransfer();
+            return;
+        }
+        
+        try {
+            // Calculate current addresses based on mode and progress
+            const srcAddr = this.calculateAddress(this.currentSrcAddr, this.transferProgress, this.srcMode);
+            const dstAddr = this.calculateAddress(this.currentDstAddr, this.transferProgress, this.dstMode);
+            
+            // Read data from source
+            let data = this.readData(srcAddr, this.srcMode);
+            
+            // Apply byte swapping if enabled
+            if (this.bswap) {
+                data = this.swapBytes(data, this.getElementSize(this.srcMode));
+            }
+            
+            // Write data to destination
+            this.writeData(dstAddr, data, this.dstMode);
+            
+            this.transferProgress++;
+            
+            console.log(`[DMA] Progress: ${this.transferProgress}/${this.numElements}, ` +
+                       `src=0x${srcAddr.toString(16)}, dst=0x${dstAddr.toString(16)}, data=0x${data.toString(16)}`);
+            
+        } catch (error) {
+            console.error(`[DMA] Transfer error: ${error.message}`);
+            this.registers.error = true;
+            this.registers.busy = false;
+            this.currentDescriptor = null;
+        }
+    }
+
+    // Calculate address based on mode and progress
+    calculateAddress(baseAddr, progress, mode) {
+        switch (mode) {
+            case 0: // Constant byte
+            case 1: // Constant word
+                return baseAddr;
+            case 2: // Incrementing byte
+                return baseAddr + progress;
+            case 3: // Incrementing word
+                return baseAddr + (progress * 4);
+            default:
+                throw new Error(`Invalid address mode: ${mode}`);
+        }
+    }
+
+    // Read data based on mode
+    readData(address, mode) {
+        switch (mode) {
+            case 0: // Constant byte
+            case 2: // Incrementing byte
+                return this.memory[address] ?? 0;
+                
+            case 1: // Constant word
+            case 3: // Incrementing word
+                // Read 32-bit word (little-endian)
+                return ((this.memory[address + 3] ?? 0) << 24) |
+                       ((this.memory[address + 2] ?? 0) << 16) |
+                       ((this.memory[address + 1] ?? 0) << 8) |
+                       (this.memory[address] ?? 0);
+                       
+            default:
+                throw new Error(`Invalid read mode: ${mode}`);
+        }
+    }
+
+    // Write data based on mode
+    writeData(address, data, mode) {
+        switch (mode) {
+            case 0: // Constant byte
+            case 2: // Incrementing byte
+                this.memory[address] = data & 0xFF;
+                break;
+                
+            case 1: // Constant word
+            case 3: // Incrementing word
+                // Write 32-bit word (little-endian)
+                this.memory[address] = data & 0xFF;
+                this.memory[address + 1] = (data >> 8) & 0xFF;
+                this.memory[address + 2] = (data >> 16) & 0xFF;
+                this.memory[address + 3] = (data >> 24) & 0xFF;
+                break;
+                
+            default:
+                throw new Error(`Invalid write mode: ${mode}`);
+        }
+    }
+
+    // Get element size for byte swapping
+    getElementSize(mode) {
+        switch (mode) {
+            case 0: // Constant byte
+            case 2: // Incrementing byte
+                return 1;
+            case 1: // Constant word
+            case 3: // Incrementing word
+                return 4;
+            default:
+                return 1;
+        }
+    }
+
+    // Swap bytes for endianness conversion
+    swapBytes(data, size) {
+        if (size === 1) {
+            return data; // No swapping for single byte
+        } else if (size === 4) {
+            // Swap bytes in 32-bit word: 0x12345678 -> 0x78563412
+            return ((data & 0xFF) << 24) |
+                   (((data >> 8) & 0xFF) << 16) |
+                   (((data >> 16) & 0xFF) << 8) |
+                   ((data >> 24) & 0xFF);
+        }
+        return data;
+    }
+
+    // Complete current transfer
+    completeTransfer() {
+        this.registers.busy = false;
+        this.registers.done = true;
+        
+        console.log(`[DMA] Transfer completed successfully: ${this.transferProgress} elements transferred`);
+        
+        // Legacy callback support
+        if (typeof this.callback === "function") {
+            this.callback();
+            this.callback = null;
+        }
+        
+        // Reset current transfer state
+        this.currentDescriptor = null;
+        this.transferProgress = 0;
+        
+        // Check for next transfer in FIFO
+        if (!this.registers.fifoEmpty) {
+            console.log("[DMA] More descriptors in FIFO, will start next transfer on next tick");
+        }
+    }
+
+    // Utility methods for debugging
+    getStatus() {
+        return {
+            enabled: this.registers.enabled,
+            busy: this.registers.busy,
+            done: this.registers.done,
+            error: this.registers.error,
+            fifoEmpty: this.registers.fifoEmpty,
+            fifoFull: this.registers.fifoFull,
+            fifoCount: this.registers.descriptorFifo.length,
+            currentTransfer: this.currentDescriptor ? {
+                progress: this.transferProgress,
+                total: this.numElements,
+                srcAddr: this.currentSrcAddr,
+                dstAddr: this.currentDstAddr
+            } : null
+        };
+    }
+
+    // Legacy property for compatibility
+    get isBusy() {
+        return this.registers.busy;
     }
 }
 
@@ -913,12 +1350,12 @@ export const simulator = {
     },
     tick() {
         // Nếu CPU dừng và DMA không chạy thì dừng hoàn toàn
-        if (this.cpu.isRunning === false && (!this.dma || !this.dma.isBusy)) {
+        if (this.cpu.isRunning === false && (!this.dma || !this.dma.registers?.busy)) {
             console.log("Simulation halted.");
             return;
         }
         // Nếu CPU dừng nhưng DMA vẫn đang chạy thì chỉ tick DMA
-        if (this.cpu.isRunning === false && this.dma && this.dma.isBusy) {
+        if (this.cpu.isRunning === false && this.dma && this.dma.registers?.busy) {
             this.dma.tick();
             this.cycleCount++;
             return;
@@ -936,8 +1373,8 @@ export const simulator = {
             this.cpu.isRunning = false;
             console.error(e);
         }
-        // Chỉ tick DMA nếu CPU đang chạy (để tránh tick DMA lặp lại khi CPU đã dừng)
-        if (this.cpu.isRunning && this.dma.isBusy) {
+        if (this.cpu.isRunning && this.dma) {
+            console.log(`[SIMULATOR] DMA tick: busy=${this.dma.registers?.busy}, enabled=${this.dma.registers?.enabled}`);
             this.dma.tick();
         }
         this.cycleCount++;

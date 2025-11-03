@@ -595,10 +595,21 @@ _encodeInstruction(instrInfo, operands, instructionAddress) {
             try {
                 const immValue = this._parseImmediate(operands[1], 32, false, isPass1);
                 if (immValue === null && isPass1) return 8; // Giả định trường hợp tệ nhất
-                return (immValue >= -2048 && immValue <= 2047) ? 4 : 8;
+                if (immValue >= -2048 && immValue <= 2047) {
+                    return 4; // chỉ addi
+                } else {
+                    // Áp dụng cùng logic như _expandAndEncodePseudo
+                    const upper = (immValue + 0x800) >> 12;
+                    let lower = immValue - (upper << 12);
+                    if (lower < -2048) lower += 4096;
+                    if (lower > 2047) lower -= 4096;
+                    // Chỉ tạo addi nếu lower !== 0
+                    return (lower !== 0) ? 8 : 4; // lui + addi hoặc chỉ lui
+                }
             } catch (e) { if (isPass1) return 8; throw e; }
         }
-        if (mnemonic === 'la' || mnemonic === 'call') return 8;
+        if (mnemonic === 'la') return 8; // auipc + addi luôn cần 8 bytes
+        if (mnemonic === 'call') return 8;
         return 4; // Mặc định các lệnh giả khác chiếm 4 byte
     },
 
@@ -621,7 +632,7 @@ _encodeInstruction(instrInfo, operands, instructionAddress) {
                     if (lower < -2048) lower += 4096;
                     if (lower > 2047) lower -= 4096;
                     expandedInstructions.push({ mnemonic: 'lui', operands: [rdLi, upper.toString()], address: address });
-                    if (lower !== 0 || immValueLi === 0) {
+                    if (lower !== 0) {
                         expandedInstructions.push({ mnemonic: 'addi', operands: [rdLi, rdLi, lower.toString()], address: address + 4 });
                     }
                 }
